@@ -2,19 +2,25 @@
 
 | 项目 | 内容 |
 |---|---|
-| 文档版本 | v0.2（按 2026-10-25 确认点修订） |
+| 文档版本 | v0.3（按 2026-10-25 第二次确认修订） |
 | 日期 | 2026-10-25 |
 | 目标环境 | DeepSeek Harness Desktop `0.2.1-rc.3`，Web GUI `http://127.0.0.1:55406` |
 | 约束 | **只设计方案，不开发、不安装、不修改现有 profile** |
 | 完成判定 | **Agent 空闲**（running → idle）即视为任务完成 |
-| 提示文案 | **仅中文**：`<工作区名>[<会话窗口名>] · <Agent状态>`，例 `插件[提示弹窗] · 待执行` |
+| 提示文案 | **默认两行**：标题 + `<工作区名>[<会话窗口名>] · <Agent状态>`；例 `插件[提示弹窗] · 待执行` |
+| 语言 | **跟随系统 / DSH 当前语言**（内置 zh、en；其他语言回退 en） |
 | 最小化 | **必须仍能提示**：应用内浮层不可见时，改由系统通知在 Windows 右下角提示 |
 | 推荐形态 | 客户端 UI 插件：`shell.overlay` 浮层 + Web Notification 系统通知 |
 | 精确增强 | 可选宿主 `session/event` → `turn/end` 事件桥，用于区分失败/停止（不参与完成判定） |
 
+**v0.2 → v0.3 变更记录**
+
+- 确认文案使用**默认两行**格式（标题 + 明细），不再把单行作为默认。
+- 语言改为**跟随系统**：恢复 `ctx.locale` 的 zh/en 字典，撤销 v0.2 的「仅中文」，提示随 DSH 当前语言切换；`locale/*.json` 仍只做插件元数据。
+
 **v0.1 → v0.2 变更记录**
 
-- 文案改为**仅中文**，新增格式 `<工作区名>[<会话窗口名>] · <Agent状态>`；默认「标题 + 明细」两行，`showTitle: false` 可输出严格单行。
+- 文案改为**仅中文**（v0.3 已撤销，改为跟随系统），新增格式 `<工作区名>[<会话窗口名>] · <Agent状态>`；默认「标题 + 明细」两行，`showTitle: false` 可输出严格单行。
 - 明确「任务完成」以 **Agent 空闲**为准，不以 Goal 完成或后台 job 结束为准。
 - 系统通知从「可选增强」提升为**最小化必达通道**，并补充权限拒绝后的恢复补弹。
 - 新增工作区名/会话窗口名解析与回退文案。
@@ -40,9 +46,9 @@
 3. **`shell.overlay` 是 click-through 的**，提示卡必须显式 `pointer-events: auto`。
 4. **完成判定只看 Agent 是否空闲**，不看 Goal 是否完成、也不等后台 job 结束；这是本次确认的明确口径。
 5. **最小化提示是硬需求**：应用内浮层在最小化时不可见，必须依赖系统通知；系统通知被拒绝时，退化为「恢复窗口后补弹」。
-6. **运行时只做中文**：不依赖 `ctx.locale`，文案用常量；`locale/zh.json`、`locale/en.json` 只用于 Plugin Manager 的插件元数据展示。
+6. **文案跟随系统**：注册 `ctx.locale` 的 `zh` / `en` 字典，跟随 DSH 当前语言（默认取系统/浏览器语言，设置可覆盖）；其他语言回退英文。
 
-**不做什么**：不改 `app.asar`、不加 Electron IPC、不装 BurntToast/PowerShell 弹窗、不写会话日志、不在 `document.body` 挂 DOM、不轮询 `agent/status`、不做英文运行时文案。
+**不做什么**：不改 `app.asar`、不加 Electron IPC、不装 BurntToast/PowerShell 弹窗、不写会话日志、不在 `document.body` 挂 DOM、不轮询 `agent/status`、不新增 zh/en 之外的语言包。
 
 ---
 
@@ -61,7 +67,7 @@
 | F7 | 多会话 | 依次完成时队列展示，最多同时 3 条 |
 | F8 | 不误报 | 页面加载/重连不误报；短任务、状态抖动不重复弹 |
 | F9 | 最小化仍提示 | 最小化或页面不可见时，系统通知必须触发（权限允许时） |
-| F10 | 仅中文 | 运行时所有可见文案为简体中文，不随界面语言切换 |
+| F10 | 语言跟随系统 | 文案随 DSH 当前语言切换（内置 zh/en；系统语言非 zh/en 时回退 en） |
 
 ### 1.2 非功能要求
 
@@ -78,7 +84,7 @@
 - 托盘气泡、任务栏闪烁、声音提示。
 - 应用完全退出后的通知（页面已销毁；需宿主进程方案，见 §3 方案 C）。
 - 按会话静音、免打扰时段、通知历史中心。
-- 英文/多语言运行时文案。
+- 新增 zh/en 之外的语言包（其他系统语言回退英文即可）。
 - 等待 Goal 完成或后台 job 结束后再提示。
 
 ### 1.4 「任务完成」的定义（已确认）
@@ -140,22 +146,24 @@ ctx.remote.$on("api-session/status", (sessionId, running) => {
 
 | reason.kind | 含义 | 本文用途 |
 |---|---|---|
-| `completed` | 正常完成 | 标题「任务完成」 |
-| `error` | LLM 失败（附 `LlmFailure`） | 标题「任务失败」 |
-| `max-tokens` | 达到输出上限 | 标题「任务已中断」 |
-| `blocked` | 被策略/归档拦截 | 标题「任务被阻止」 |
-| `aborted` | 取消；`reason.reason.kind` 为 `user` / `parent` / `hook` / `disposed` / `legacy` | 用户取消不提示或标题「任务已停止」 |
-| `interrupted` | 被中断 | 标题「任务已中断」 |
+| `completed` | 正常完成 | 标题 `titleCompleted` |
+| `error` | LLM 失败（附 `LlmFailure`） | 标题 `titleError` |
+| `max-tokens` | 达到输出上限 | 标题 `titleInterrupted` |
+| `blocked` | 被策略/归档拦截 | 标题 `titleBlocked` |
+| `aborted` | 取消；`reason.reason.kind` 为 `user` / `parent` / `hook` / `disposed` / `legacy` | 用户取消不提示或标题 `titleStopped` |
+| `interrupted` | 被中断 | 标题 `titleInterrupted` |
 | `forked` | 分叉收尾 | 不提示 |
 
+- 上表是翻译 key；中文/英文实际文案见 §5.7，随系统语言切换。
 - 对已 retain 的会话（通常是当前打开的会话），无需宿主代码也能从 `SessionBinding.eventSource` 回溯最后一条 `turn/end`，用于区分完成/取消/失败；未 retain 的后台会话仍需要 v1.1 事件桥。
 
 ### 2.5 工作区名与会话窗口名
 
 - **工作区**：客户端 `workspaces` 服务的 `WorkspaceView` 明确包含 `workspaceId`、`path`、`title`、`sessionIds`、`createdAt`、`updatedAt`。`shell.overlay` 的标准 prop `useWorkspaces` 暴露 `WorkspaceSnapshot`，可按 `sessionIds` 反查某会话所属工作区的 `title`。
 - **会话窗口名**：即会话标题。`sessions.list` 的列表行携带标题（DSH 自身对无标题行显示「未命名」）；用 `sessions.list.byId[id].title` 读取。
-- **回退**：找不到工作区时显示「未分组」；找不到会话标题时显示「未命名会话」。
-- **只做中文**：上述标签和格式都写成中文常量，不注册 `ctx.locale`，不跟随界面语言。
+- **回退**：找不到工作区时显示 `fallbackWorkspace`（未分组 / Ungrouped）；找不到会话标题时显示 `fallbackSession`（未命名会话 / Untitled session）。
+- **语言跟随系统**：不硬编码中文。注册 `ctx.locale` 的 `zh` / `en` 字典，组件订阅 `ctx.locale` 的语言变化后重渲染；DSH 默认按系统/浏览器语言选择，用户在设置里切换语言时提示同步切换。系统语言不在 zh/en 时回退英文。
+- **为什么跟随 DSH 语言而不是直接读 `navigator.language`**：DSH 的语言选择可能来自用户设置，直接读浏览器语言会与其他界面文案不一致；跟随 `ctx.locale` 才能保证「系统默认、设置可覆盖」。
 
 ### 2.6 主题
 
@@ -208,7 +216,7 @@ ctx.remote.$on("api-session/status", (sessionId, running) => {
 │  │                           │   (v1.1)        │  │   ├ 名称解析(工作区/会话)     │  │
 │  └───────────────────────────┘                 │  │   ├ ToastCard × N            │  │
 │                                                │  │   └ SystemNotifier           │  │
-│                                                │  └ 中文文案常量                  │  │
+│                                                │  └ locale 字典 (zh/en)          │  │
 │                                                └─────────────────────────────────┘  │
 └────────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -299,7 +307,9 @@ if (reason?.kind === 'aborted' && reason.reason?.kind === 'user') return  // 用
 
 ### 5.3 提示卡文案与视觉
 
-**默认两行**
+**默认两行（已确认）**
+
+中文：
 
 ```
 窗口右下角（安全边距 24px）
@@ -309,31 +319,41 @@ if (reason?.kind === 'aborted' && reason.reason?.kind === 'user') return  // 用
 └──────────────────────────────────────────────┘
 ```
 
-- 第一行：完成标题（「任务完成」/「任务失败」/「任务已停止」）。
-- 第二行：严格遵循新格式 `<工作区名>[<会话窗口名>] · <Agent状态>`。
-- 若要求严格单行，设 `showTitle: false`，此时输出恰好是 `插件[提示弹窗] · 待执行`。
+英文（系统/DSH 语言为 English 时）：
+
+```
+┌──────────────────────────────────────────────┐
+│  ✓   Task completed                       ×  │
+│      Plugins[Toast popup] · Idle             │
+└──────────────────────────────────────────────┘
+```
+
+- 第一行：完成标题（`titleCompleted` / `titleError` / `titleStopped`）。
+- 第二行：严格遵循新格式 `<工作区名>[<会话窗口名>] · <Agent状态>`，由 `format` 模板渲染。
+- 两行都走 `ctx.locale`，语言切换时整卡即时更新。
+- `showTitle: false` 可以只保留第二行（保留为可选项，默认不启用）。
 
 **格式细则**
 
-| 片段 | 取值 | 回退 |
+| 片段 | 取值 | 回退（zh / en） |
 |---|---|---|
-| 工作区名 | `WorkspaceView.title`（按 `sessionIds` 反查；空时取 `path` 最后一段） | `未分组` |
-| 会话窗口名 | `sessions.list.byId[id].title`（字段名以实际列表行类型为准） | `未命名会话` |
+| 工作区名 | `WorkspaceView.title`（按 `sessionIds` 反查；空时取 `path` 最后一段） | 未分组 / Ungrouped |
+| 会话窗口名 | `sessions.list.byId[id].title`（字段名以实际列表行类型为准） | 未命名会话 / Untitled session |
 | 分隔 | 固定 `[` `]` 与 ` · `（前后各一个空格） | — |
-| Agent 状态 | 见下表；完成瞬间为 `待执行` | `待执行` |
+| Agent 状态 | 见下表；完成瞬间为空闲态 | 待执行 / Idle |
 
 **Agent 状态文案**
 
-| 状态 | 文案 | 说明 |
+| 状态 | 中文 | 英文 |
 |---|---|---|
-| Agent 空闲、等待下一条指令 | `待执行` | 完成后的状态，匹配本次示例 |
-| Agent 正在运行 | `执行中` | 若将来做状态提示时使用 |
-| 等待用户回答 | `等待回答` | 有待处理问题，不弹完成提示 |
-| 等待审批 | `等待审批` | 有待处理审批，不弹完成提示 |
+| Agent 空闲、等待下一条指令 | `待执行` | `Idle` |
+| Agent 正在运行 | `执行中` | `Running` |
+| 等待用户回答 | `等待回答` | `Awaiting answer` |
+| 等待审批 | `等待审批` | `Awaiting approval` |
 
 **长文本**
 
-- 工作区名最多约 12 个汉字、会话名最多约 16 个汉字，超出用省略号；整行 `white-space: nowrap; overflow: hidden; text-overflow: ellipsis`。
+- 工作区名、会话名超长时用省略号；整行 `white-space: nowrap; overflow: hidden; text-overflow: ellipsis`。中英文都按实际渲染宽度截断，不写死字符数。
 - `title` 属性与 `aria-label` 保留完整文本，方便悬停/读屏获取。
 
 **尺寸与样式**
@@ -357,7 +377,7 @@ if (reason?.kind === 'aborted' && reason.reason?.kind === 'user') return  // 用
 
 | 操作 | 行为 |
 |---|---|
-| 点击卡片/「查看」 | `window.focus()`；`ctx.uiWorkspace.openSession(sessionId)`；关闭该条 |
+| 点击卡片/「查看」（View） | `window.focus()`；`ctx.uiWorkspace.openSession(sessionId)`；关闭该条 |
 | 点击「×」/Esc | 关闭该条，不打开会话 |
 | 悬停/聚焦 | 暂停自动消失计时，离开后恢复剩余时间 |
 | 页面恢复可见 | 若有「通知未送达」的排队条目，补弹一条并清空 |
@@ -379,14 +399,16 @@ systemNotification === 'always'
 **内容**
 
 ```js
-const n = new Notification('任务完成', {
-  body: '插件[提示弹窗] · 待执行',   // 与浮层第二行完全一致
+const n = new Notification(t('titleCompleted'), {
+  body: '插件[提示弹窗] · 待执行',   // 当前语言的明细行，与浮层第二行完全一致
   tag: `dsh-task-${sessionId}`,      // 同会话只保留最新
   renotify: false,
   silent: false,
 })
 n.onclick = () => { window.focus(); ctx.uiWorkspace.openSession(sessionId); n.close() }
 ```
+
+上例为中文；英文界面下标题为 `Task completed`，正文为 `Plugins[Toast popup] · Idle`。标题和正文都用 `t()` 生成，与浮层保持同一语言。
 
 **权限与降级**
 
@@ -425,7 +447,7 @@ n.onclick = () => { window.focus(); ctx.uiWorkspace.openSession(sessionId); n.cl
 | `minRunMs` | number | `1500` | 短于该时长不提示 |
 | `coalesceMs` | number | `250` | 状态稳定观察窗 |
 | `cooldownMs` | number | `3000` | 同会话去重窗口 |
-| `showTitle` | boolean | `true` | 是否显示第一行「任务完成」；`false` 时严格单行格式 |
+| `showTitle` | boolean | `true` | 是否显示第一行标题（任务完成 / Task completed）；`false` 时只保留明细行 |
 | `systemNotification` | `'auto' \| 'always' \| 'never'` | `'auto'` | 最小化场景建议保持 `auto`/`always` |
 | `suppressWhenFocused` | boolean | `false` | `true` 时窗口聚焦不弹浮层 |
 | `maxPerMinute` | number | `6` | 风暴保护 |
@@ -435,28 +457,40 @@ n.onclick = () => { window.focus(); ctx.uiWorkspace.openSession(sessionId); n.cl
 - **v1**：`client.js` 顶部 `DEFAULTS` 常量；改配置需改文件/重装。
 - **v1.1**：宿主 `apply(ctx, config)` 读取行配置，经 `webserver/index-inject` 推入 `{ kind: 'global', name: '__DSH_TASK_COMPLETE_TOAST__', value: config }`；客户端启动读取，缺失用默认值。配置变更下次页面加载生效。
 
-### 5.7 中文文案常量（不依赖 locale）
+### 5.7 多语言文案（跟随系统）
 
-运行时不注册 `ctx.locale`，全部使用常量；界面语言切到英文也不变。
+运行时注册 DSH 语言服务的中英文字典：
 
-| key | 文案 |
-|---|---|
-| `title.completed` | `任务完成` |
-| `title.error` | `任务失败` |
-| `title.stopped` | `任务已停止` |
-| `title.interrupted` | `任务已中断` |
-| `status.idle` | `待执行` |
-| `status.running` | `执行中` |
-| `status.awaitingAnswer` | `等待回答` |
-| `status.awaitingApproval` | `等待审批` |
-| `fallback.workspace` | `未分组` |
-| `fallback.session` | `未命名会话` |
-| `action.view` | `查看` |
-| `action.close` | `关闭提示` |
-| `format` | `{workspace}[{session}] · {status}` |
+```js
+const NS = 'taskCompleteToast'
+ctx.effect(
+  () => ctx.locale.register(NS, { zh, en }),
+  'task-complete-toast: dictionaries',
+)
+```
 
-- 插件元数据仍放在 `locale/zh.json`（`meta.title` / `meta.description`）；`locale/en.json` 仅作为 Plugin Manager 的英文元数据回退，不参与运行时文案。
-- 日期/时长如需显示，统一用中文（如 `2 分 13 秒`）；本期默认不显示时长，保持格式简洁。
+| key | 中文 | 英文 |
+|---|---|---|
+| `titleCompleted` | 任务完成 | Task completed |
+| `titleError` | 任务失败 | Task failed |
+| `titleStopped` | 任务已停止 | Task stopped |
+| `titleInterrupted` | 任务已中断 | Task interrupted |
+| `titleBlocked` | 任务被阻止 | Task blocked |
+| `statusIdle` | 待执行 | Idle |
+| `statusRunning` | 执行中 | Running |
+| `statusAwaitingAnswer` | 等待回答 | Awaiting answer |
+| `statusAwaitingApproval` | 等待审批 | Awaiting approval |
+| `fallbackWorkspace` | 未分组 | Ungrouped |
+| `fallbackSession` | 未命名会话 | Untitled session |
+| `actionView` | 查看 | View |
+| `actionClose` | 关闭提示 | Dismiss |
+| `format` | `{workspace}[{session}] · {status}` | `{workspace}[{session}] · {status}` |
+
+- **跟随系统的方式**：组件订阅 `ctx.locale` 的语言变化，用 `ctx.locale.bind(NS)` 取翻译函数；DSH 默认按系统/浏览器语言选择，用户在设置里切换语言时提示即时更新。
+- **回退**：DSH 内置 zh/en；系统语言为其他语言时，locale 链回退到英文。
+- **不在组件里写死文案**：所有可见文本（标题、状态、回退名、按钮）都走 `t(key)`。
+- 插件元数据仍放在 `locale/zh.json`、`locale/en.json` 的 `meta.title` / `meta.description`，与运行时字典分开。
+- 日期/时长如需显示，也走 `Intl.DateTimeFormat` 或 `t` 的占位符，不手写「分/秒」。
 
 ### 5.8 插件包结构与清单
 
@@ -468,7 +502,7 @@ task-complete-toast/
 ├─ client.js           # 客户端半区：store + overlay + 名称解析 + 系统通知
 ├─ locale/
 │  ├─ zh.json          # 插件元数据（中文）
-│  └─ en.json          # 插件元数据（英文回退，可选）
+│  └─ en.json          # 插件元数据（英文）
 ├─ icon.svg
 └─ README.md
 ```
@@ -478,7 +512,7 @@ task-complete-toast/
 ```json
 {
   "name": "@local/task-complete-toast",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "exports": {
@@ -520,11 +554,24 @@ window.__ModuleLoader__.load({
     const h = React.createElement
     const { useEffect, useSyncExternalStore } = React
 
-    const TEXT = {
-      completed: '任务完成', error: '任务失败', stopped: '任务已停止',
-      idle: '待执行', running: '执行中',
+    const NS = 'taskCompleteToast'
+    const zh = {
+      titleCompleted: '任务完成', titleError: '任务失败', titleStopped: '任务已停止',
+      titleInterrupted: '任务已中断', titleBlocked: '任务被阻止',
+      statusIdle: '待执行', statusRunning: '执行中',
+      statusAwaitingAnswer: '等待回答', statusAwaitingApproval: '等待审批',
       fallbackWorkspace: '未分组', fallbackSession: '未命名会话',
-      format: (w, s, st) => `${w}[${s}] · ${st}`,
+      actionView: '查看', actionClose: '关闭提示',
+      format: '{workspace}[{session}] · {status}',
+    }
+    const en = {
+      titleCompleted: 'Task completed', titleError: 'Task failed', titleStopped: 'Task stopped',
+      titleInterrupted: 'Task interrupted', titleBlocked: 'Task blocked',
+      statusIdle: 'Idle', statusRunning: 'Running',
+      statusAwaitingAnswer: 'Awaiting answer', statusAwaitingApproval: 'Awaiting approval',
+      fallbackWorkspace: 'Ungrouped', fallbackSession: 'Untitled session',
+      actionView: 'View', actionClose: 'Dismiss',
+      format: '{workspace}[{session}] · {status}',
     }
     const DEFAULTS = { /* §5.6 */ }
 
@@ -597,27 +644,39 @@ window.__ModuleLoader__.load({
     function workspaceTitle(workspaces, sessionId) {
       for (const w of Object.values(workspaces.byId ?? {})) {
         if (w.sessionIds?.includes(sessionId)) {
-          return w.title || w.path?.split(/[\\/]/).pop() || TEXT.fallbackWorkspace
+          return w.title || w.path?.split(/[\\/]/).pop() || ''
         }
       }
-      return TEXT.fallbackWorkspace
+      return ''
     }
 
     function createToastHost(store, ctx, config) {
       return function ToastHost(props) {
         const { useSessions, useWorkspaces } = props
+        // 订阅语言切换，切换后整卡重渲染
+        useSyncExternalStore(
+          (fn) => ctx.locale.subscribe(fn),
+          () => ctx.locale.getSnapshot(),
+        )
+        const t = ctx.locale.bind(NS)
+        const TEXT = {
+          completed: t('titleCompleted'), error: t('titleError'), stopped: t('titleStopped'),
+          idle: t('statusIdle'),
+          fallbackWorkspace: t('fallbackWorkspace'), fallbackSession: t('fallbackSession'),
+          format: (w, s, st) => t('format', { workspace: w, session: s, status: st }),
+        }
         const sessionsSnap = useSessions()
         const workspacesSnap = useWorkspaces()
         const toasts = useSyncExternalStore(store.subscribe, store.get)
         const notified = React.useRef(new Set())
 
-        const lineOf = (t) => TEXT.format(
-          workspaceTitle(workspacesSnap, t.id),
-          sessionsSnap.byId?.[t.id]?.title || TEXT.fallbackSession,
+        const lineOf = (item) => TEXT.format(
+          workspaceTitle(workspacesSnap, item.id) || TEXT.fallbackWorkspace,
+          sessionsSnap.byId?.[item.id]?.title || TEXT.fallbackSession,
           TEXT.idle,
         )
-        const titleOf = (t) => t.outcome === 'completed' ? TEXT.completed
-          : t.outcome === 'stopped' ? TEXT.stopped : TEXT.error
+        const titleOf = (item) => item.outcome === 'completed' ? TEXT.completed
+          : item.outcome === 'stopped' ? TEXT.stopped : TEXT.error
 
         // 最小化/页面不可见：系统通知与浮层使用同一文案
         useEffect(() => {
@@ -638,19 +697,22 @@ window.__ModuleLoader__.load({
           }
         }, [toasts, sessionsSnap, workspacesSnap])
 
-        return h('div', { className: 'dsh-tct-root' }, toasts.map((t) => h(ToastCard, {
-          key: t.id,
-          title: titleOf(t),
-          line: lineOf(t),
-          onClose: () => store.dismiss(t.id),
-          onOpen: () => { window.focus(); ctx.uiWorkspace.openSession(t.id); store.dismiss(t.id) },
+        return h('div', { className: 'dsh-tct-root' }, toasts.map((item) => h(ToastCard, {
+          key: item.id,
+          title: titleOf(item),
+          line: lineOf(item),
+          viewLabel: t('actionView'),
+          closeLabel: t('actionClose'),
+          onClose: () => store.dismiss(item.id),
+          onOpen: () => { window.focus(); ctx.uiWorkspace.openSession(item.id); store.dismiss(item.id) },
         })))
       }
     }
 
     return {
-      inject: ['slots', 'sessions', 'remote', 'uiWorkspace'],
+      inject: ['slots', 'sessions', 'locale', 'remote', 'uiWorkspace'],
       apply(ctx) {
+        ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'task-complete-toast: dictionaries')
         const store = createStore(ctx, DEFAULTS)
         ctx.effect(() => store.start(), 'task-complete-toast: status')
         ctx.slots.inject('shell.overlay', () => ctx.slots.register(
@@ -671,6 +733,7 @@ window.__ModuleLoader__.load({
 - 每个会话最多一个 settle 计时器；`dismiss`、`connection/reset`、插件卸载时清空。
 - 不轮询 `agent/status`；v1 不订阅 `session/event`。
 - 名称解析只在渲染层做一次快照映射；不遍历全部会话日志。
+- 语言字典用 `ctx.effect` 注册、卸载自动移除；组件用 `useSyncExternalStore` 订阅语言切换，卸载自动退订。
 - 页面隐藏时保留 WebSocket 订阅（仍能收到状态）；系统通知由渲染层 effect 发送，不依赖动画帧。
 - `deferred` 补弹队列独立于可见 toast 队列，避免隐藏期间被自动消失清掉。
 - 卸载时设置 `disposed` 标志，忽略仍挂起的权限回调；关闭所有 `Notification`（可选）。
@@ -681,7 +744,7 @@ window.__ModuleLoader__.load({
 - 插件不访问文件系统、不发网络请求（v1）；v1.1 的 SSE 只读本机同源。
 - 不写会话日志、不修改 Agent 行为、不注册工具。
 - 系统通知只含工作区名、会话标题、状态文案；**不含模型输出、路径、工具参数**。
-- 点击「查看」走官方 `uiWorkspace.openSession`，不自行拼路由。
+- 点击「查看 / View」走官方 `uiWorkspace.openSession`，不自行拼路由。
 - 不在宿主侧执行 shell；方案 C 若启用需单独安全评审。
 
 ### 5.11 v1.1 精确结果桥（可选）
@@ -749,7 +812,8 @@ export function apply(ctx) {
 | 工作区名/会话名取不到 | 中 | 低 | 回退「未分组」「未命名会话」；hover 显示完整文本 |
 | 工作区/会话重名或过长 | 中 | 低 | 省略号 + `title` 属性；格式不拆行 |
 | 两行文案被误认为「不是要求格式」 | 中 | 低 | `showTitle: false` 可输出严格单行；默认两行兼顾「任务完成」 |
-| 运行时只做中文，英文界面下仍是中文 | 确定 | 低 | 本次明确要求；元数据仍可英文 |
+| 系统语言非 zh/en 时回退英文 | 确定 | 低 | DSH 内置 zh/en；回退是预期行为，文档写明 |
+| 用户设置语言覆盖系统语言 | 中 | 低 | 跟随 DSH 当前语言而非直接读 `navigator.language` |
 | `ctx.remote.$on` 未来变动 | 低 | 高 | 封装 `StatusSource`；备选 `useSessionStatus`；锁版本回归 |
 | 两个 GUI 标签同时弹 | 中 | 低 | `BroadcastChannel` 去重 |
 | 子代理会话噪音 | 高 | 低 | 按子代理标记过滤 |
@@ -765,9 +829,9 @@ export function apply(ctx) {
 |---|---|---|
 | T1 | 安装后刷新页面 | `shell.overlay` 出现 occupant `task-complete-toast`；不弹提示 |
 | T2 | 5 s 任务后切到其他应用 | 完成后 ≤ 800 ms 在窗口右下角出现两行提示；5 s 后消失 |
-| T3 | 文案格式 | 明细行严格为 `工作区[会话] · 待执行`，示例 `插件[提示弹窗] · 待执行` |
+| T3 | 文案格式 | 中文下明细行严格为 `工作区[会话] · 待执行`，示例 `插件[提示弹窗] · 待执行`；英文下为 `Workspace[Session] · Idle` |
 | T4 | `showTitle: false` | 只剩明细行，且与 F2 完全一致 |
-| T5 | 工作区/会话名缺失 | 显示 `未分组` / `未命名会话`，不出现 `undefined`/空括号 |
+| T5 | 工作区/会话名缺失 | 显示当前语言的 `未分组`/`Ungrouped`、`未命名会话`/`Untitled session`，不出现 `undefined`/空括号 |
 | T6 | 超长工作区/会话名 | 省略号截断，hover 可看全，不换行、不撑破卡片 |
 | T7 | 点击提示卡 | 聚焦窗口并打开对应会话 |
 | T8 | 快速问答（< 1.5 s） | 不提示 |
@@ -779,15 +843,16 @@ export function apply(ctx) {
 | T14 | 最小化且通知权限 denied | 不崩溃；恢复窗口后补弹应用内提示 |
 | T15 | 深色/浅色、125%/150% 缩放、480 px 窄窗 | 样式正确、不溢出 |
 | T16 | 减少动态效果 | 无位移，仅淡入淡出 |
-| T17 | 界面语言切换为 English | 提示仍为中文（本次要求） |
-| T18 | 禁用插件 | 浮层消失、无计时器、无控制台报错 |
-| T19 | 100 次完成压测 | 内存/监听器稳定，无泄漏 |
+| T17 | 界面语言切换为 English | 标题变 `Task completed`，明细变 `Plugins[Toast popup] · Idle` |
+| T18 | 系统语言为 zh/en 之外 | 回退英文，不出现空白或 key |
+| T19 | 禁用插件 | 浮层消失、无计时器、无控制台报错 |
+| T20 | 100 次完成压测 | 内存/监听器稳定，无泄漏 |
 
 **量化验收**
 
 - 完成 → 提示 P95 ≤ 500 ms（v1.1）/ 800 ms（v1）。
 - 最小化场景（权限 granted）通知到达率 100%（受 OS 专注助手影响需单独记录）。
-- 文案格式检查：明细行 100% 匹配 `^.+\[.+\] · (待执行|执行中|等待回答|等待审批)$`。
+- 文案格式检查：明细行 100% 匹配 `^.+\[.+\] · (待执行|执行中|等待回答|等待审批|Idle|Running|Awaiting answer|Awaiting approval)$`。
 - 插件包体积 < 50 KB（不含图标），无新增运行时依赖。
 
 ---
@@ -796,7 +861,7 @@ export function apply(ctx) {
 
 | 阶段 | 内容 | 预估 |
 |---|---|---|
-| M1 | 客户端骨架 + `shell.overlay` 卡片 + 中文文案常量 | 0.5 人日 |
+| M1 | 客户端骨架 + `shell.overlay` 卡片 + zh/en locale 字典 | 0.5 人日 |
 | M2 | 状态机 + 队列 + 去重 + 工作区/会话名称解析 | 0.5–1 人日 |
 | M3 | 系统通知 + 最小化/恢复补弹 + T13/T14 实测 | 0.5–1 人日 |
 | M4（可选） | v1.1 宿主 `turn/end` + SSE + 鉴权验证 | 1–2 人日 |
@@ -808,7 +873,7 @@ export function apply(ctx) {
 
 ## 9. 待确认问题
 
-1. **第一行是否保留？** 当前默认两行（「任务完成」+ 新格式明细）；若要求严格只有一行，把 `showTitle` 默认改为 `false` 即可。
+1. **「跟随系统」的口径**：本文实现为跟随 **DSH 当前语言**（默认取系统/浏览器语言，用户在设置中的选择优先）。若要求忽略 DSH 设置、固定跟随 OS 语言，请指出。
 2. **失败/取消是否必须区分？** v1 只对当前打开会话较可靠；后台会话需要 v1.1，工期 +1–2 天。
 3. **「会话窗口名」确认**：本文取会话标题（`sessions.list` 的 title）；如果你指的是其他窗口标题，请指出。
 4. **多标签页**是否要求严格不重复？默认 `BroadcastChannel` 尽力去重。
@@ -829,6 +894,7 @@ export function apply(ctx) {
 | 打开会话 | `ctx.uiWorkspace.openSession(sessionId)` | 点击回跳 |
 | 重连事件 | `ctx.on('connection/reset', fn)` | 重置基线 |
 | 主题 | `var(--dsw-alias-bg-overlay)` 等 | 见 §2.6 |
+| 语言 | `ctx.locale.register(ns, { zh, en })`；`ctx.locale.bind(ns)`；`ctx.locale.subscribe/getSnapshot` | 跟随 DSH 当前语言 |
 | 系统通知 | `new Notification(title, { body, tag, ... })` | 权限见 §5.5 |
 | 宿主结果桥（v1.1） | `ctx.on('session/event', ...)` → `turn/end.reason` | 只修标题 |
 | 宿主 HTTP 路由 | `ctx.webServer.register({ kind, path, handler })` | 返回 disposer |
@@ -845,8 +911,9 @@ export function apply(ctx) {
 | `WorkspaceView` 字段 | Client `Service.listService(workspaces)` referencedTypes |
 | `turn/end` 原因枚举 | Host `Event.listEvents(session/event)` |
 | 主题 token | Client `Theme.listTokens` |
+| 语言 API 与回退 | `@deepseek-ai/dsh-client-locale/README.md`：`register(ns,{zh,en})`、`bind(ns)`、回退链 |
 | 插件清单/安装格式 | `cordis-plugin-development` 模板与 `references/host-plugin.md` |
 
 ---
 
-**结论**：v1 在「只做插件、不改 DSH」的约束下可落地：`shell.overlay` 负责窗口内右下角的两行提示，`api-session/status` 负责「Agent 空闲即完成」，名称解析负责新格式，Web Notification 负责最小化场景，中文常量负责单语言文案。v1.1 只用于把「任务完成」标题纠正为失败/停止，不改变触发口径。
+**结论**：v1 在「只做插件、不改 DSH」的约束下可落地：`shell.overlay` 负责窗口内右下角的两行提示，`api-session/status` 负责「Agent 空闲即完成」，名称解析负责新格式，Web Notification 负责最小化场景，`ctx.locale` 的 zh/en 字典负责跟随系统语言。v1.1 只用于把「任务完成」标题纠正为失败/停止，不改变触发口径。
