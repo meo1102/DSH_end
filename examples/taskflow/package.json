@@ -1,0 +1,14 @@
+{
+  "name": "taskflow",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "零依赖命令行任务管理示例（Harness 指南配套）",
+  "bin": {
+    "taskflow": "bin/taskflow.js"
+  },
+  "scripts": {
+    "test": "node --test --test-isolation=none \"test/*.test.js\"",
+    "start": "node bin/taskflow.js"
+  }
+}

@@ -1,0 +1,10 @@
+# 运行时产生的数据与临时文件
+.taskflow/
+tasks.json
+
+# 依赖（本项目零依赖，留作习惯）
+node_modules/
+
+# 编辑器与系统文件
+.DS_Store
+Thumbs.db
