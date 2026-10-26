@@ -219,16 +219,15 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 可注入的消失计时器：start/pause/resume/dispose。
-     * pause 保留剩余时间，resume 按剩余时间继续。
+     * ADR-013 消失计时器：start 起算完整 durationMs；enter 取消计时（held）；
+     * leave 从零重新起算完整 durationMs，不保留剩余时间。
      *
-     * @param {{now: () => number, setTimeout: Function, clearTimeout: Function}} env
+     * @param {{now?: () => number, setTimeout: Function, clearTimeout: Function}} env
      * @param {number} durationMs
      * @param {() => void} onExpire
      */
     function createDismissTimer(env, durationMs, onExpire) {
       // 真实 window 没有 now；timers 也可能是精简对象。缺什么就回落，绝不抛错。
-      const now = typeof env?.now === 'function' ? () => env.now() : () => Date.now();
       const scheduleTimer = typeof env?.setTimeout === 'function'
         ? (callback, ms) => env.setTimeout(callback, ms)
         : (callback, ms) => (typeof setTimeout === 'function' ? setTimeout(callback, ms) : 0);
@@ -237,12 +236,12 @@ window.__ModuleLoader__.load({
         : (id) => {
           if (typeof clearTimeout === 'function') clearTimeout(id);
         };
-      let remaining = Math.max(0, durationMs);
-      let startedAt = null;
+      const full = Number.isFinite(durationMs) ? Math.max(0, durationMs) : 0;
       let timer = null;
       let disposed = false;
       let fired = false;
-      let hasStarted = false;
+      let started = false;
+      let held = false;
 
       function clear() {
         if (timer !== null) {
@@ -255,38 +254,32 @@ window.__ModuleLoader__.load({
         timer = null;
         if (disposed || fired) return;
         fired = true;
-        startedAt = null;
-        remaining = 0;
+        held = false;
         onExpire();
       }
 
-      function schedule() {
-        timer = scheduleTimer(fire, remaining);
+      function scheduleFull() {
+        timer = scheduleTimer(fire, full);
       }
 
       function start() {
-        if (hasStarted || disposed || fired || startedAt !== null) return;
-        hasStarted = true;
-        startedAt = now();
-        schedule();
+        if (started || disposed || fired) return;
+        started = true;
+        held = false;
+        scheduleFull();
       }
 
-      function pause() {
-        if (disposed || fired || startedAt === null) return;
-        remaining = Math.max(0, remaining - (now() - startedAt));
-        startedAt = null;
+      function enter() {
+        if (!started || disposed || fired || held) return;
+        held = true;
         clear();
-        if (remaining === 0) fire();
       }
 
-      function resume() {
-        if (!hasStarted || disposed || fired || startedAt !== null) return;
-        if (remaining <= 0) {
-          fire();
-          return;
-        }
-        startedAt = now();
-        schedule();
+      function leave() {
+        if (!started || disposed || fired || !held) return;
+        held = false;
+        // ADR-013：移出/失焦后重新等待完整 durationMs，不是恢复剩余时间。
+        scheduleFull();
       }
 
       function dispose() {
@@ -294,14 +287,200 @@ window.__ModuleLoader__.load({
         clear();
       }
 
-      function remainingMs() {
-        if (fired || disposed) return 0;
-        if (startedAt === null) return remaining;
-        return Math.max(0, remaining - (now() - startedAt));
+      return { start, enter, leave, dispose };
+    }
+
+    /**
+     * 页面加载时生成一次的 tabId（ADR-011）：优先 crypto.randomUUID，
+     * 不可用时回落到时间戳+随机串。只用于认领比较，不含会话内容。
+     */
+    function createTabId(env) {
+      const cryptoObj = env?.crypto;
+      try {
+        if (typeof cryptoObj?.randomUUID === 'function') {
+          const value = cryptoObj.randomUUID();
+          if (typeof value === 'string' && value.length > 0) return value;
+        }
+      } catch {
+        // 权限/实现差异：回落。
+      }
+      const random = Math.random().toString(36).slice(2, 10);
+      return `${Date.now().toString(36)}-${random}`;
+    }
+
+    /**
+     * R2 多标签认领租约（ADR-011 / §7.6）。
+     *
+     * - 频道 `dsh-task-complete-toast/v1`，消息 `{v:1,type:'claim',sessionId,tabId,at}`；
+     * - 同一 sessionId 在认领窗内收到的 claim 中，tabId 字典序最小者胜出；
+     *   自己的消息忽略；无 BroadcastChannel 恒胜；
+     * - 频道在租约创建（页面加载）时打开，避免“晚结算的标签看不到早结算的
+     *   广播”导致双弹；最近 claim 缓存只用于覆盖窗口前后的并发竞态；
+     * - reset 关闭频道并清理在途计时器，下一次 claim 重新打开；dispose 永久关闭。
+     *
+     * @param {{BroadcastChannel?: Function, crypto?: object, now?: () => number,
+     *          setTimeout: Function, clearTimeout: Function, tabId?: string}} env
+     * @param {object} [config]
+     */
+    function createClaimLease(env, config) {
+      const settings = { ...DEFAULTS, ...(config ?? {}) };
+      const windowMs = Number.isFinite(settings.claimWindowMs) && settings.claimWindowMs >= 0
+        ? settings.claimWindowMs
+        : DEFAULTS.claimWindowMs;
+      const now = typeof env?.now === 'function' ? () => env.now() : () => Date.now();
+      const scheduleTimer = typeof env?.setTimeout === 'function'
+        ? (callback, ms) => env.setTimeout(callback, ms)
+        : (callback, ms) => (typeof setTimeout === 'function' ? setTimeout(callback, ms) : 0);
+      const cancelTimer = typeof env?.clearTimeout === 'function'
+        ? (id) => env.clearTimeout(id)
+        : (id) => {
+          if (typeof clearTimeout === 'function') clearTimeout(id);
+        };
+      const channelName = 'dsh-task-complete-toast/v1';
+      const Channel = typeof env?.BroadcastChannel === 'function' ? env.BroadcastChannel : undefined;
+      const tabId = typeof env?.tabId === 'string' && env.tabId.length > 0
+        ? env.tabId
+        : createTabId(env);
+      const pending = new Map(); // sessionId → 在途认领
+      const recent = new Map(); // sessionId → 最近看到的其他 tab（覆盖窗口前后竞态）
+      let channel = null;
+      let disposed = false;
+
+      function openChannel() {
+        if (channel !== null || disposed || typeof Channel !== 'function') return channel;
+        try {
+          channel = new Channel(channelName);
+          if (channel !== null && typeof channel === 'object') {
+            channel.onmessage = (event) => receive(event?.data);
+          }
+        } catch {
+          channel = null;
+        }
+        return channel;
       }
 
-      return { start, pause, resume, dispose, remaining: remainingMs };
+      function pruneRecent(current) {
+        for (const [sessionId, entry] of recent) {
+          if (current - entry.at > windowMs) recent.delete(sessionId);
+        }
+      }
+
+      function receive(message) {
+        if (disposed || message === null || typeof message !== 'object') return;
+        if (message.v !== 1 || message.type !== 'claim') return;
+        const sessionId = message.sessionId;
+        const otherTab = message.tabId;
+        if (typeof sessionId !== 'string' || sessionId.length === 0) return;
+        if (typeof otherTab !== 'string' || otherTab.length === 0) return;
+        if (otherTab === tabId) return;
+
+        const at = now();
+        const entry = pending.get(sessionId);
+        if (entry !== undefined && entry.done !== true) {
+          if (entry.bestOther === undefined || otherTab < entry.bestOther) entry.bestOther = otherTab;
+          // 已有更小的 tabId：本标签不可能胜出，立即判负。
+          if (entry.bestOther < tabId) settle(sessionId, entry, false);
+          return;
+        }
+
+        const previous = recent.get(sessionId);
+        if (previous === undefined) {
+          recent.set(sessionId, { tabId: otherTab, at });
+          return;
+        }
+        previous.at = at;
+        if (otherTab < previous.tabId) previous.tabId = otherTab;
+      }
+
+      function settle(sessionId, entry, won) {
+        if (entry.done !== true) {
+          entry.done = true;
+          if (entry.timer !== null) {
+            cancelTimer(entry.timer);
+            entry.timer = null;
+          }
+          if (pending.get(sessionId) === entry) pending.delete(sessionId);
+        }
+        entry.resolve(won === true);
+      }
+
+      function claim(sessionId) {
+        if (disposed) return Promise.resolve(false);
+        if (typeof Channel !== 'function') return Promise.resolve(true);
+        openChannel();
+        if (channel === null) return Promise.resolve(true);
+
+        const current = now();
+        pruneRecent(current);
+        const previous = recent.get(sessionId);
+        const seed = previous !== undefined && current - previous.at <= windowMs
+          ? previous.tabId
+          : undefined;
+        // 已知有更小的 tabId 时无需再广播，直接判负。
+        if (seed !== undefined && seed < tabId) return Promise.resolve(false);
+
+        const existing = pending.get(sessionId);
+        if (existing !== undefined) settle(sessionId, existing, false);
+
+        return new Promise((resolve) => {
+          const entry = { resolve, timer: null, bestOther: seed, done: false };
+          pending.set(sessionId, entry);
+          entry.timer = scheduleTimer(() => {
+            const won = !(entry.bestOther !== undefined && entry.bestOther < tabId);
+            settle(sessionId, entry, won);
+          }, windowMs);
+          try {
+            channel.postMessage({ v: 1, type: 'claim', sessionId, tabId, at: current });
+          } catch {
+            // 发送失败按“无通道”处理，避免因基础设施错误漏提示。
+            settle(sessionId, entry, true);
+          }
+        });
+      }
+
+      /** 取消某个会话的在途认领；迟到的结果由 store 的 state/generation 守卫丢弃。 */
+      function cancel(sessionId) {
+        const entry = pending.get(sessionId);
+        if (entry === undefined) return;
+        settle(sessionId, entry, false);
+      }
+
+      function closeChannel() {
+        if (channel === null) return;
+        const current = channel;
+        channel = null;
+        try {
+          current.close();
+        } catch {
+          // 关闭失败不影响后续重置。
+        }
+      }
+
+      function reset() {
+        for (const [sessionId, entry] of [...pending]) settle(sessionId, entry, false);
+        pending.clear();
+        recent.clear();
+        closeChannel();
+      }
+
+      function dispose() {
+        disposed = true;
+        reset();
+      }
+
+      if (typeof Channel === 'function') openChannel();
+
+      return {
+        claim,
+        cancel,
+        reset,
+        dispose,
+        tabId,
+        channelName,
+        hasChannel: () => channel !== null,
+      };
     }
+
 
     /**
      * 每会话状态机：unknown → running → settling(250ms) → decide → 队列。
@@ -313,7 +492,8 @@ window.__ModuleLoader__.load({
      *   clearTimeout: (id: number) => void,
      *   list: object|(() => object),
      *   onStatus: (handler: (id: string, running: boolean) => void) => (() => void)|void,
-     *   getBinding?: (id: string) => object|undefined
+     *   getBinding?: (id: string) => object|undefined,
+     *   onEnqueued?: (item: object) => void
      * }} env
      * @param {object} [config]
      */
@@ -390,6 +570,7 @@ window.__ModuleLoader__.load({
        */
       function startResolution(id, state, generation) {
         state.controller = undefined;
+        state.resolutionPromise = null;
         if (typeof env.resolve !== 'function') {
           // 未注入 resolver 时保留旧行为（Item.outcome='pending'），便于单测独立使用 Store。
           state.resolution = { status: 'none' };
@@ -405,7 +586,8 @@ window.__ModuleLoader__.load({
           state.resolution = { status: 'done', outcome: 'completed' };
           return;
         }
-        Promise.resolve(promise).then(
+        // 后台快路径等这个 Promise 完成后再 decide，避免把 error 降级成 completed。
+        state.resolutionPromise = Promise.resolve(promise).then(
           (result) => {
             if (states.get(id) !== state || state.mode !== 'settling' || state.generation !== generation) return;
             state.resolution = { status: 'done', outcome: normalizeResolvedOutcome(result?.outcome) };
@@ -413,6 +595,49 @@ window.__ModuleLoader__.load({
           () => {
             if (states.get(id) !== state || state.mode !== 'settling' || state.generation !== generation) return;
             state.resolution = { status: 'done', outcome: 'completed' };
+          },
+        );
+      }
+
+      /** 取消该会话在途认领（若存在）；迟到结果由 state/generation 守卫丢弃。 */
+      function cancelClaim(id, state) {
+        if (state === undefined) return;
+        const claim = state.claim;
+        state.claim = { status: 'none' };
+        if (claim === undefined || claim.status !== 'pending') return;
+        if (typeof env.cancelClaim === 'function') {
+          try {
+            env.cancelClaim(id);
+          } catch {
+            // 取消失败不影响状态机；结果仍会被守卫丢弃。
+          }
+        }
+      }
+
+      /**
+       * R2：在 settling 起点与 resolver 并行发起认领（不 await、不串行）。
+       * 未注入 claim / claim 抛错 → 视作胜出；仍在途 → decide 时降级胜出。
+       */
+      function startClaim(id, state, generation) {
+        state.claim = { status: 'none' };
+        if (typeof env.claim !== 'function') return;
+        state.claim = { status: 'pending' };
+        let promise;
+        try {
+          promise = env.claim(id);
+        } catch {
+          state.claim = { status: 'won' };
+          return;
+        }
+        Promise.resolve(promise).then(
+          (won) => {
+            if (states.get(id) !== state || state.mode !== 'settling' || state.generation !== generation) return;
+            state.claim = { status: won === false ? 'lost' : 'won' };
+          },
+          () => {
+            if (states.get(id) !== state || state.mode !== 'settling' || state.generation !== generation) return;
+            // 认领基础设施错误按胜出处理（失败开放），不让底层异常吞掉提示。
+            state.claim = { status: 'won' };
           },
         );
       }
@@ -452,9 +677,29 @@ window.__ModuleLoader__.load({
         const list = readList();
         const row = list?.byId?.[id];
         const finish = () => {
+          cancelClaim(id, state);
           abortResolution(state);
           states.delete(id);
         };
+
+        env.debug?.('decide', {
+          sessionId: id,
+          claim: state.claim?.status,
+          resolution: state.resolution?.status,
+          foreground: typeof env.isForeground === 'function' ? env.isForeground() : undefined,
+        });
+
+        // R2：认领明确失败时直接结束，不入队、不通知、不更新冷却/发射计数。
+        const claimStatus = state.claim?.status ?? 'none';
+        if (claimStatus === 'lost') return finish();
+        if (claimStatus === 'pending' && typeof env.onDiagnostic === 'function') {
+          try {
+            // 降级：decide 时认领仍在途，按胜出处理但不阻塞提示。
+            env.onDiagnostic('claim-pending-at-decide', id);
+          } catch {
+            // 诊断失败不影响主流程。
+          }
+        }
 
         // §8.3 规则 1-8，顺序短路。
         if (state.sawRunning !== true) return finish();
@@ -488,7 +733,38 @@ window.__ModuleLoader__.load({
         lastToastAt.set(id, nowMs);
         emittedAt.push(nowMs);
         publish();
+        // R1b-D1：入队即回调，通知不依赖 React 渲染（遮挡/节流期间也能发）。
+        if (typeof env.onEnqueued === 'function') {
+          try {
+            env.onEnqueued(item);
+          } catch {
+            // 通知接线失败不得回滚已入队的浮层条目。
+          }
+        }
         finish();
+      }
+
+      /**
+       * 后台快路径（R1b-D1）：页面不在前台时 250ms timer 可能被 Chromium
+       * 节流/冻结；改用微任务调度 decide。若 resolution 尚未完成，先等它的
+       * Promise，避免标题/文案倒退（error → completed）。
+       */
+      function scheduleBackgroundDecide(id, state, generation) {
+        const run = () => {
+          if (states.get(id) !== state || state.mode !== 'settling' || state.generation !== generation) return;
+          if (state.resolution?.status === 'pending') {
+            const waiting = state.resolutionPromise;
+            if (waiting !== undefined && waiting !== null) {
+              Promise.resolve(waiting).then(run, run);
+            } else {
+              env.debug?.('background:no-resolution-promise', { sessionId: id });
+            }
+            return;
+          }
+          decide(id, state);
+        };
+        if (typeof queueMicrotask === 'function') queueMicrotask(run);
+        else Promise.resolve().then(run);
       }
 
       function onStatus(id, running) {
@@ -498,7 +774,8 @@ window.__ModuleLoader__.load({
         if (running === true) {
           if (state === undefined) state = { mode: 'unknown', sawRunning: false, startedAt: 0 };
           clearSettle(state);
-          // 观察窗内回弹：取消在途解析，结果不再写回（§8.2）。
+          // 观察窗内回弹：取消在途解析与认领，结果不再写回（§8.2）。
+          cancelClaim(id, state);
           abortResolution(state);
           if (state.mode === 'running') {
             state.sawRunning = true;
@@ -513,19 +790,34 @@ window.__ModuleLoader__.load({
 
         if (running !== false) return;
         if (state === undefined) state = { mode: 'unknown', sawRunning: false, startedAt: 0 };
+        env.debug?.('status:false', { sessionId: id, mode: state.mode });
 
         if (state.mode === 'running') {
           const generation = (state.generation ?? 0) + 1;
           state.mode = 'settling';
           state.generation = generation;
-          // 与 250ms 观察窗并行发起解析，不等计时器到期（§8.4）。
+          // 与 250ms 观察窗并行发起解析与认领，不等计时器到期（§8.4）。
+          startClaim(id, state, generation);
           startResolution(id, state, generation);
-          state.timer = scheduleTimer(() => {
-            if (states.get(id) !== state) return;
-            if (state.mode !== 'settling' || state.generation !== generation) return;
-            state.timer = undefined;
-            decide(id, state);
-          }, settings.coalesceMs);
+
+          const foreground = typeof env.isForeground === 'function' ? env.isForeground() === true : true;
+          if (foreground) {
+            // 前台保留 250ms 合并语义。
+            state.timer = scheduleTimer(() => {
+              if (states.get(id) !== state) return;
+              if (state.mode !== 'settling' || state.generation !== generation) return;
+              state.timer = undefined;
+              decide(id, state);
+            }, settings.coalesceMs);
+          } else {
+            // 遮挡/最小化：不等 timer，微任务尽快 decide/notify。
+            scheduleBackgroundDecide(id, state, generation);
+          }
+          env.debug?.('settle:schedule', {
+            sessionId: id,
+            foreground,
+            mode: foreground ? 'coalesce-timer' : 'microtask',
+          });
           return;
         }
 
@@ -542,14 +834,23 @@ window.__ModuleLoader__.load({
       }
 
       function reset() {
-        for (const state of states.values()) {
+        for (const [id, state] of states) {
           clearSettle(state);
+          cancelClaim(id, state);
           abortResolution(state);
         }
         states.clear();
         items.length = 0;
         lastToastAt.clear();
         emittedAt.length = 0;
+        // ADR-011：connection/reset 时关闭认领通道并清掉在途窗口与最近缓存。
+        if (typeof env.resetClaims === 'function') {
+          try {
+            env.resetClaims();
+          } catch {
+            // 通道清理失败不影响队列/状态清空。
+          }
+        }
         publish();
       }
 
@@ -842,7 +1143,7 @@ window.__ModuleLoader__.load({
      * 真实浏览器 env（WP6a）：时间/计时器来自 window，会话与状态事件来自 ctx。
      * 未注入 resolver 时 `resolve` 缺席，store 保持旧的 'pending' 行为。
      */
-    function createClientEnv(ctx, resolver) {
+    function createClientEnv(ctx, resolver, claims) {
       const win = typeof window !== 'undefined' ? window : undefined;
       return {
         now: () => Date.now(),
@@ -856,9 +1157,18 @@ window.__ModuleLoader__.load({
         onStatus: (handler) => ctx.remote.$on('api-session/status', handler),
         getBinding: (id) => ctx.sessions.binding(id),
         resolve: (id, signal) => resolver.resolve(id, signal),
-        isFocused: () => (
-          typeof win?.document?.hasFocus === 'function' ? win.document.hasFocus() === true : false
-        ),
+        isFocused: typeof claims?.isFocused === 'function'
+          ? claims.isFocused
+          : () => (
+            typeof win?.document?.hasFocus === 'function' ? win.document.hasFocus() === true : false
+          ),
+        claim: claims?.claim,
+        cancelClaim: claims?.cancelClaim,
+        resetClaims: claims?.resetClaims,
+        onEnqueued: claims?.onEnqueued,
+        onDiagnostic: claims?.onDiagnostic,
+        isForeground: claims?.isForeground,
+        debug: claims?.debug,
       };
     }
 
@@ -1042,7 +1352,7 @@ window.__ModuleLoader__.load({
       }
     }
 
-    /** 单张卡片：自动消失（可暂停）、两行、状态图标、关闭按钮、点击回跳。 */
+    /** 单张卡片：ADR-013 离场计时（移入取消、移出重新完整时长）、两行、图标、关闭、点击回跳。 */
     function ToastCard(props) {
       const { item, title, line, t, showTitle, onDismiss, onOpen, timers, durationMs } = props;
       const scheduleTimer = typeof timers?.setTimeout === 'function'
@@ -1054,13 +1364,14 @@ window.__ModuleLoader__.load({
           if (typeof clearTimeout === 'function') clearTimeout(id);
         };
       const [closing, setClosing] = React.useState(false);
+      const cardRef = React.useRef(null);
       const controlRef = React.useRef(null);
 
       if (controlRef.current === null) {
         controlRef.current = {
           closing: false,
           exit: null,
-          paused: new Set(),
+          held: new Set(),
           timer: null,
         };
         controlRef.current.timer = createDismissTimer(timers, durationMs, () => beginClose());
@@ -1077,24 +1388,40 @@ window.__ModuleLoader__.load({
         }, 120);
       }
 
-      const pauseFor = (reason) => {
-        if (control.paused.has(reason)) return;
-        control.paused.add(reason);
-        if (control.paused.size === 1) control.timer.pause();
+      const holdFor = (reason) => {
+        if (control.held.has(reason)) return;
+        control.held.add(reason);
+        if (control.held.size === 1) control.timer.enter();
       };
-      const resumeFor = (reason) => {
-        if (!control.paused.delete(reason)) return;
-        if (control.paused.size === 0) control.timer.resume();
+      const releaseFor = (reason) => {
+        if (!control.held.delete(reason)) return;
+        if (control.held.size === 0) control.timer.leave();
       };
+      /** 卡片内部焦点移动（relatedTarget 仍在卡片内）不得重置计时（ADR-013）。 */
+      const isInside = (node, target) => (
+        node !== null && target !== null && typeof node?.contains === 'function'
+          ? node.contains(target)
+          : false
+      );
 
       React.useEffect(() => {
         control.timer.start();
 
-        // 页面隐藏时暂停自动消失；恢复可见后按剩余时间继续，避免隐藏期间过期。
+        // 卡片出现时指针已在其区域（:hover）按移入处理，不计时（ADR-013）。
+        const node = cardRef.current;
+        try {
+          if (node !== null && typeof node?.matches === 'function' && node.matches(':hover') === true) {
+            holdFor('hover');
+          }
+        } catch {
+          // 伪类不可用/已卸载：按未悬停处理。
+        }
+
+        // 页面隐藏时暂停自动消失；恢复可见后重新完整计时（ADR-013 §影响）。
         const applyVisibility = () => {
           if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') return;
-          if (document.visibilityState === 'visible' && document.hidden !== true) resumeFor('hidden');
-          else pauseFor('hidden');
+          if (document.visibilityState === 'visible' && document.hidden !== true) releaseFor('hidden');
+          else holdFor('hidden');
         };
         applyVisibility();
         if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
@@ -1128,6 +1455,7 @@ window.__ModuleLoader__.load({
         'data-tone': tone,
         role: 'group',
         'aria-label': label,
+        ref: cardRef,
         onClick: () => {
           try {
             if (typeof onOpen === 'function') onOpen(item.sessionId);
@@ -1136,10 +1464,18 @@ window.__ModuleLoader__.load({
           }
           onDismiss(item.key);
         },
-        onMouseEnter: () => pauseFor('hover'),
-        onMouseLeave: () => resumeFor('hover'),
-        onFocus: () => pauseFor('focus'),
-        onBlur: () => resumeFor('focus'),
+        // ADR-013：鼠标只绑一对 enter/leave；移入取消、移出重新完整计时。
+        onMouseEnter: () => holdFor('hover'),
+        onMouseLeave: () => releaseFor('hover'),
+        // 焦点同理；React 的 focus/blur 会冒泡，内部换焦点必须忽略。
+        onFocus: (event) => {
+          if (isInside(event?.currentTarget, event?.relatedTarget)) return;
+          holdFor('focus');
+        },
+        onBlur: (event) => {
+          if (isInside(event?.currentTarget, event?.relatedTarget)) return;
+          releaseFor('focus');
+        },
       },
         icon,
         h('div', { className: 'dtt-body' },
@@ -1209,6 +1545,14 @@ window.__ModuleLoader__.load({
       React.useSyncExternalStore(subscribeLocale, getLocaleSnapshot, getLocaleSnapshot);
       const workspaces = useWorkspaces(IDENTITY);
       const sessions = useSessions(IDENTITY);
+      // 供 apply 的入队通知做渲染无关解析；页面加载即挂载，通常首帧就有缓存。
+      if (typeof props.onSnapshots === 'function') {
+        try {
+          props.onSnapshots(workspaces, sessions);
+        } catch {
+          // 缓存更新失败不得影响渲染。
+        }
+      }
 
       React.useEffect(() => {
         if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return undefined;
@@ -1226,7 +1570,7 @@ window.__ModuleLoader__.load({
         const names = resolveNames(workspaces, sessions, item.sessionId);
         const title = titleOf(t, item.outcome);
         const line = formatLine(t, names.workspace, names.session, t('statusIdle'));
-        // 文案共享表：key → {title, line}，notifier 读同一份，保证通知正文与浮层第二行逐字一致。
+        // 文案共享表：key → {title, line}；入队通知已带同源文案，这里供渲染/补弹兜底。
         if (texts !== undefined && typeof texts?.set === 'function') texts.set(item.key, { title, line });
         return h(ToastErrorBoundary, { key: item.key },
           h(ToastCard, {
@@ -1265,9 +1609,89 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 前台标志（R1b-D1 诊断修复）：window focus/blur 事件维护，不单独依赖
+     * `document.hasFocus()`。Electron 被完全遮挡时后者可能仍为 true。
+     */
+    function createForegroundTracker(win, doc) {
+      let focused = true;
+      if (doc !== null && typeof doc === 'object') {
+        try {
+          focused = typeof doc.hasFocus === 'function' ? doc.hasFocus() === true : true;
+        } catch {
+          focused = true;
+        }
+      }
+
+      const onFocus = () => {
+        focused = true;
+      };
+      const onBlur = () => {
+        focused = false;
+      };
+      let listening = false;
+      if (win !== null && typeof win === 'object' && typeof win.addEventListener === 'function') {
+        try {
+          win.addEventListener('focus', onFocus);
+          win.addEventListener('blur', onBlur);
+          listening = true;
+        } catch {
+          listening = false;
+        }
+      }
+
+      return {
+        isForeground: () => focused,
+        dispose() {
+          if (!listening) return;
+          listening = false;
+          try {
+            win.removeEventListener('focus', onFocus);
+            win.removeEventListener('blur', onBlur);
+          } catch {
+            // 卸载失败不影响后续清理。
+          }
+        },
+      };
+    }
+
+    /** 一轮临时诊断日志：带可见性快照，不含会话标题/路径。 */
+    function createDebugLogger(win, getForeground) {
+      return (event, data) => {
+        try {
+          const consoleObj = win?.console;
+          if (consoleObj === null || typeof consoleObj?.debug !== 'function') return;
+          const doc = win?.document;
+          let hasFocus;
+          try {
+            hasFocus = typeof doc?.hasFocus === 'function' ? doc.hasFocus() : undefined;
+          } catch {
+            hasFocus = undefined;
+          }
+          let foreground;
+          try {
+            foreground = typeof getForeground === 'function' ? getForeground() : undefined;
+          } catch {
+            foreground = undefined;
+          }
+          consoleObj.debug('[task-complete-toast]', {
+            event,
+            at: Date.now(),
+            visibilityState: doc?.visibilityState,
+            hidden: doc?.hidden,
+            hasFocus,
+            foreground,
+            ...(data ?? {}),
+          });
+        } catch {
+          // 诊断日志不得影响主流程。
+        }
+      };
+    }
+
+    /**
      * 系统通知与补弹（§6.6）。只负责权限、可见性与补弹，不判断“是否算完成”。
      * env: { document, Notification, window, openSession, hasUserActivation,
-     *        texts?, requeue? }
+     *        texts?, requeue?, isForeground?, debug? }
      *
      * D1：permission='default' 也先尝试构造发送；只有构造抛错才 deferred。
      * D3：通知关闭/onclose/点击后从 issued 移除。
@@ -1280,6 +1704,7 @@ window.__ModuleLoader__.load({
       const win = env?.window;
       const NotificationCtor = env?.Notification;
       const texts = env?.texts;
+      const debug = typeof env?.debug === 'function' ? env.debug : () => {};
       const deferred = new Map();
       const issued = new Set();
       let disposed = false;
@@ -1289,6 +1714,8 @@ window.__ModuleLoader__.load({
         if (doc === null || typeof doc !== 'object') return true;
         if (typeof doc.visibilityState === 'string' && doc.visibilityState !== 'visible') return false;
         if (doc.hidden === true) return false;
+        // R1b-D1：优先用 focus/blur 维护的前台标志；hasFocus() 在遮挡时可能失真。
+        if (typeof env?.isForeground === 'function') return env.isForeground() === true;
         if (typeof doc.hasFocus === 'function' && doc.hasFocus() === false) return false;
         return true;
       }
@@ -1387,10 +1814,28 @@ window.__ModuleLoader__.load({
       }
 
       async function notify(item) {
-        if (disposed || item === null || typeof item !== 'object') return 'skipped';
-        if (settings.systemNotification === 'never') return 'skipped';
-        if (settings.systemNotification === 'auto' && isPageVisible()) return 'skipped';
-        return send(enrich(item));
+        if (disposed || item === null || typeof item !== 'object') {
+          debug('notify:skip', { reason: 'disposed', sessionId: item?.sessionId });
+          return 'skipped';
+        }
+        if (settings.systemNotification === 'never') {
+          debug('notify:skip', { reason: 'never', sessionId: item.sessionId });
+          return 'skipped';
+        }
+        if (settings.systemNotification === 'auto' && isPageVisible()) {
+          debug('notify:skip', { reason: 'visible-focused', sessionId: item.sessionId });
+          return 'skipped';
+        }
+        debug('notify:deliver', {
+          sessionId: item.sessionId,
+          systemNotification: settings.systemNotification,
+        });
+        const status = await send(enrich(item));
+        debug(`notify:${status}`, {
+          sessionId: item.sessionId,
+          permission: NotificationCtor?.permission,
+        });
+        return status;
       }
 
       async function onVisible() {
@@ -1469,14 +1914,61 @@ window.__ModuleLoader__.load({
         ctx.effect(() => ctx.locale.register(LOCALE_NS, 'en', en));
         const t = ctx.locale.bind(LOCALE_NS);
 
-        // 4. 真实 store：窗口/会话/状态事件/resolver 全部注入。
-        const store = createStore(createClientEnv(ctx, resolver), config);
-        ctx.effect(() => store.start());
-        ctx.effect(() => ctx.on('connection/reset', () => store.reset()));
+        // R1b-D1：前台标志用 window focus/blur 维护；日志保留一轮供用户复测。
+        const foreground = createForegroundTracker(win, win?.document);
+        ctx.effect(() => () => foreground.dispose());
+        const debug = createDebugLogger(win, () => foreground.isForeground());
+        const isForegroundPage = () => {
+          if (foreground.isForeground() !== true) return false;
+          const doc = win?.document;
+          if (doc?.hidden === true) return false;
+          if (typeof doc?.visibilityState === 'string' && doc.visibilityState !== 'visible') return false;
+          return true;
+        };
 
-        // 5. 通知：文案共享表由 ToastHost 渲染时填充，notifier 读同一份。
+        // 4. 真实 store：窗口/会话/状态事件/resolver/认领全部注入。
+        // 认领租约在页面加载时创建并打开频道；connection/reset 与卸载时清理。
+        const lease = createClaimLease({
+          BroadcastChannel: win?.BroadcastChannel,
+          crypto: win?.crypto,
+          now: () => Date.now(),
+          setTimeout: (callback, ms) => (
+            typeof win?.setTimeout === 'function' ? win.setTimeout(callback, ms) : 0
+          ),
+          clearTimeout: (id) => {
+            if (typeof win?.clearTimeout === 'function') win.clearTimeout(id);
+          },
+        }, config);
+        ctx.effect(() => () => lease.dispose());
+
+        // R1b-D1：通知所需状态在入队回调里就绪；渲染不再是通知的前置条件。
         const texts = new Map();
         const handled = new Set();
+        let workspaceSnapshot = null;
+        let sessionsSnapshot = null;
+        let notifyEnqueued = null;
+
+        const store = createStore(createClientEnv(ctx, resolver, {
+          claim: (id) => lease.claim(id),
+          cancelClaim: (id) => lease.cancel(id),
+          resetClaims: () => lease.reset(),
+          onEnqueued: (item) => {
+            if (notifyEnqueued !== null) notifyEnqueued(item);
+          },
+          onDiagnostic: (code) => {
+            try {
+              win?.console?.debug?.(`task-complete-toast: ${code}`);
+            } catch {
+              // 诊断输出失败不影响主流程。
+            }
+          },
+          isForeground: isForegroundPage,
+          isFocused: () => foreground.isForeground(),
+          debug,
+        }), config);
+        ctx.effect(() => ctx.on('connection/reset', () => store.reset()));
+
+        // 5. 通知：入队即触发；ToastHost 渲染只补文案共享表，不负责首次通知。
         const openSession = (id) => ctx.uiWorkspace.openSession(id);
         const notifier = createNotifier({
           document: win?.document ?? (typeof document !== 'undefined' ? document : undefined),
@@ -1488,6 +1980,8 @@ window.__ModuleLoader__.load({
             return nav?.userActivation?.isActive === true;
           },
           texts,
+          isForeground: () => foreground.isForeground(),
+          debug,
           requeue: (item) => {
             const next = store.requeue(item);
             // 新一轮浮层已经出现，通知由 onVisible 自己的重试路径负责，避免重复。
@@ -1497,12 +1991,63 @@ window.__ModuleLoader__.load({
         }, t, config);
         ctx.effect(() => () => notifier.dispose());
 
-        /** 渲染后调用：文案已进共享表，按 key 去重后触发一次通知。 */
+        /**
+         * 渲染无关的文案：工作区用 ToastHost 最近一次渲染缓存（页面加载即挂载，
+         * 通常已就绪），会话优先同源缓存、缺值时用实时快照；都缺时 formatLine
+         * 落回退文案，绝不为空。
+         */
+        function textFor(item) {
+          let liveSessions = null;
+          try {
+            liveSessions = typeof ctx.sessions?.list?.getSnapshot === 'function'
+              ? ctx.sessions.list.getSnapshot()
+              : null;
+          } catch {
+            liveSessions = null;
+          }
+          // 工作区来自渲染缓存；会话优先用缓存（与浮层同源），缺值时用实时快照补。
+          const cached = resolveNames(workspaceSnapshot, sessionsSnapshot, item.sessionId);
+          const live = resolveNames(workspaceSnapshot, liveSessions, item.sessionId);
+          return {
+            title: titleOf(t, item.outcome),
+            line: formatLine(t, cached.workspace, cached.session ?? live.session, t('statusIdle')),
+          };
+        }
+
+        /** 入队即通知；同一 key 只发一次，渲染后不得重复。 */
+        function notifyEnqueuedNow(item) {
+          if (item === null || typeof item !== 'object') return;
+          debug('onEnqueued', {
+            sessionId: item.sessionId,
+            key: item.key,
+            handled: handled.has(item.key),
+          });
+          if (handled.has(item.key)) return;
+          let text;
+          try {
+            text = textFor(item);
+          } catch {
+            text = { title: titleOf(t, item.outcome), line: '' };
+          }
+          handled.add(item.key);
+          void notifier.notify({ ...item, title: text.title, line: text.line });
+        }
+        notifyEnqueued = notifyEnqueuedNow;
+
+        ctx.effect(() => store.start());
+
+        /** 渲染后兜底：正常路径已在入队时通知；这里只处理漏网条目并按 key 去重。 */
         function notifyItems(items) {
           for (const item of items) {
-            if (handled.has(item.key) || !texts.has(item.key)) continue;
+            if (handled.has(item.key)) continue;
+            let text;
+            try {
+              text = textFor(item);
+            } catch {
+              text = { title: titleOf(t, item.outcome), line: '' };
+            }
             handled.add(item.key);
-            void notifier.notify(item);
+            void notifier.notify({ ...item, title: text.title, line: text.line });
           }
           // 已离开队列的 key 不再需要去重记录，避免长会话累积。
           const liveKeys = new Set(items.map((item) => item.key));
@@ -1510,6 +2055,15 @@ window.__ModuleLoader__.load({
             if (!liveKeys.has(key)) handled.delete(key);
           }
         }
+
+        // 无渲染时（遮挡）也要清掉离开队列的 key，避免 handled 长期累积。
+        const stopPrune = store.subscribe((items) => {
+          const liveKeys = new Set(items.map((item) => item.key));
+          for (const key of handled) {
+            if (!liveKeys.has(key)) handled.delete(key);
+          }
+        });
+        ctx.effect(() => stopPrune);
 
         // 6. 组件订阅 locale 快照；t 在调用时解析当前语言。
         const localeFace = {
@@ -1526,6 +2080,10 @@ window.__ModuleLoader__.load({
             locale: props.locale ?? localeFace,
             texts: props.texts ?? texts,
             onRendered: props.onRendered ?? notifyItems,
+            onSnapshots: props.onSnapshots ?? ((workspaces, sessions) => {
+              workspaceSnapshot = workspaces;
+              sessionsSnapshot = sessions;
+            }),
             openSession: props.openSession ?? openSession,
           }));
         }
@@ -1550,6 +2108,8 @@ window.__ModuleLoader__.load({
         titleOf,
         resolveNames,
         createDismissTimer,
+        createClaimLease,
+        createTabId,
         createNotifier,
       },
     };

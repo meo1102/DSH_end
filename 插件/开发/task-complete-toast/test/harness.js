@@ -66,6 +66,55 @@ export function createFakeReact() {
 }
 
 /**
+ * 伪 BroadcastChannel 总线：同一总线上的同名频道互相投递，投递是同步的
+ * （比真实浏览器更严格），用来确定性地验证认领消息顺序与胜者规则。
+ * 记录频道名、消息、仍打开的实例数与关闭次数，便于断言清理。
+ */
+export function createBroadcastBus() {
+  const instances = new Set();
+  const names = [];
+  const messages = [];
+  let closed = 0;
+  let nextId = 1;
+
+  class FakeBroadcastChannel {
+    constructor(name) {
+      this.name = name;
+      this.id = nextId;
+      nextId += 1;
+      this.onmessage = null;
+      this.closed = false;
+      instances.add(this);
+      names.push(name);
+    }
+
+    postMessage(data) {
+      if (this.closed) throw new Error('BroadcastChannel is closed');
+      messages.push({ name: this.name, data });
+      for (const other of [...instances]) {
+        if (other === this || other.closed || other.name !== this.name) continue;
+        if (typeof other.onmessage === 'function') other.onmessage({ data });
+      }
+    }
+
+    close() {
+      if (this.closed) return;
+      this.closed = true;
+      closed += 1;
+      instances.delete(this);
+    }
+  }
+
+  return {
+    Ctor: FakeBroadcastChannel,
+    names,
+    messages,
+    openCount: () => instances.size,
+    closedCount: () => closed,
+  };
+}
+
+/**
  * 解析 cordis.patch.yml 的常用子集：顶层 `- insert:` 列表，行内 `key: value`，
  * 以及 `config:` 这类缩进映射。支持字符串/布尔/数字/null、单双引号与行尾注释。
  * 遇到子集之外的结构直接抛错，避免结构变化被误判为通过。

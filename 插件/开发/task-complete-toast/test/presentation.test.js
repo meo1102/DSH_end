@@ -158,12 +158,23 @@ function completedBinding() {
 function createApplyHarness(options = {}) {
   const clock = options.clock ?? createClock();
   const document = options.document ?? createDocument();
+  const windowListeners = new Map();
   const windowObject = {
     setTimeout: clock.setTimeout,
     clearTimeout: clock.clearTimeout,
     document,
     Notification: options.Notification ?? FakeNotification,
     navigator: options.navigator ?? { userActivation: { isActive: false } },
+    addEventListener(type, handler) {
+      const list = windowListeners.get(type) ?? [];
+      list.push(handler);
+      windowListeners.set(type, list);
+    },
+    removeEventListener(type, handler) {
+      const list = windowListeners.get(type) ?? [];
+      const index = list.indexOf(handler);
+      if (index >= 0) list.splice(index, 1);
+    },
     __DSH_TASK_COMPLETE_TOAST__: {
       minRunMs: 0,
       cooldownMs: 0,
@@ -197,6 +208,9 @@ function createApplyHarness(options = {}) {
     config: toastProps.config,
     status(id, running) {
       fake.emitRemote('api-session/status', id, running);
+    },
+    dispatchWindow(type) {
+      for (const handler of [...(windowListeners.get(type) ?? [])]) handler();
     },
     render() {
       assert.ok(element !== undefined, '未注册 overlay');
@@ -279,7 +293,7 @@ test('P01 隐藏时入队：notifier 被调用，正文与浮层第二行逐字�
   const card = cardTreeOf(cardsOf(tree)[0]);
   const line = lineOf(card);
 
-  assert.equal(FakeNotification.instances.length, 1, '隐藏时应在渲染后触发通知');
+  assert.equal(FakeNotification.instances.length, 1, '隐藏时应在入队后触发通知，不依赖渲染');
   const notification = FakeNotification.instances[0];
   assert.equal(notification.options.body, line, '通知正文必须与浮层第二行一致');
   assert.equal(notification.title, titleOfCard(card), '标题也必须同源');
@@ -294,6 +308,9 @@ test('P02 可见时入队：不发送系统通知', async () => {
   completeRun(harness, 's-2');
   await flushMicrotasks();
   harness.clock.advance(250);
+  await flushMicrotasks();
+  assert.equal(FakeNotification.instances.length, 0, '入队时可见聚焦不得发系统通知');
+
   harness.render();
 
   assert.equal(harness.store.get().length, 1, '浮层条目仍应在队');
@@ -677,4 +694,134 @@ test('P12 window 形状的 timers（方法依赖 this）：绑定正确、now �
   scheduled[scheduled.length - 1].callback();
   assert.equal(expired, true);
   timer.dispose();
+});
+
+// ---------------------------------------------------------------------------
+// R1b-D1：遮挡/未聚焦时系统通知不得依赖 ToastHost 渲染。
+// ---------------------------------------------------------------------------
+
+test('R1b-D1-1 隐藏且从未渲染：入队即发通知', async () => {
+  FakeNotification.reset('granted');
+  const document = createDocument({ visible: false, focused: false });
+  const harness = createApplyHarness({ document, sessionIds: ['s-13'], binding: completedBinding });
+
+  completeRun(harness, 's-13');
+  await flushMicrotasks();
+  harness.clock.advance(250);
+  await flushMicrotasks();
+
+  assert.equal(harness.store.get().length, 1, '浮层条目应已入队');
+  assert.equal(FakeNotification.instances.length, 1, '未调用 render 也必须发出通知');
+
+  const notification = FakeNotification.instances[0];
+  assert.equal(notification.title, '任务完成');
+  assert.equal(notification.options.body, '未分组[未命名会话] · 待执行', '名称缺失也必须发，且落回退文案');
+  assert.equal(notification.options.tag, 'dsh-task-s-13');
+});
+
+test('R1b-D1-2 可见未聚焦（被遮挡）：入队即发；渲染后不重复', async () => {
+  FakeNotification.reset('granted');
+  const document = createDocument({ visible: true, focused: false });
+  const harness = createApplyHarness({ document, sessionIds: ['s-14'], binding: completedBinding });
+
+  completeRun(harness, 's-14');
+  await flushMicrotasks();
+  harness.clock.advance(250);
+  await flushMicrotasks();
+
+  assert.equal(FakeNotification.instances.length, 1, '页面可见但未聚焦时必须通知');
+  const body = FakeNotification.instances[0].options.body;
+
+  const tree = harness.render();
+  const card = cardTreeOf(cardsOf(tree)[0]);
+  assert.equal(lineOf(card), body, '浮层第二行与通知正文一致');
+  assert.equal(FakeNotification.instances.length, 1, '渲染后不得对同一条重复通知');
+});
+
+test('R1b-D1-3 名称缓存可用：通知与浮层同文且渲染不重复', async () => {
+  FakeNotification.reset('granted');
+  const document = createDocument({ visible: false, focused: false });
+  const workspacesSnapshot = { byId: { w: { title: '插件', sessionIds: ['s-15'] } } };
+  const sessionsSnapshot = { byId: { 's-15': { title: 'Toast popup' } } };
+  const slotProps = {
+    useWorkspaces(selector) {
+      return selector(workspacesSnapshot);
+    },
+    useSessions(selector) {
+      return selector(sessionsSnapshot);
+    },
+  };
+  const harness = createApplyHarness({
+    document,
+    sessionIds: ['s-15'],
+    binding: completedBinding,
+    slotProps,
+  });
+
+  // 真实页面加载即挂载 ToastHost；首帧把快照写入渲染无关缓存。
+  harness.render();
+  completeRun(harness, 's-15');
+  await flushMicrotasks();
+  harness.clock.advance(250);
+  await flushMicrotasks();
+
+  assert.equal(FakeNotification.instances.length, 1);
+  assert.equal(FakeNotification.instances[0].options.body, '插件[Toast popup] · 待执行');
+
+  const tree = harness.render();
+  const card = cardTreeOf(cardsOf(tree)[0]);
+  assert.equal(lineOf(card), FakeNotification.instances[0].options.body);
+  assert.equal(FakeNotification.instances.length, 1, '渲染后不得重复通知');
+});
+
+test('R1b-D1-4 hasFocus=true 但 window 已 blur：按未聚焦处理，不等 250ms', async () => {
+  FakeNotification.reset('granted');
+  const document = createDocument({ visible: true, focused: true });
+  const harness = createApplyHarness({ document, sessionIds: ['s-16'], binding: completedBinding });
+
+  // Electron 遮挡时 hasFocus() 可能仍为 true；前台标志必须由 blur 事件覆盖。
+  harness.dispatchWindow('blur');
+  completeRun(harness, 's-16');
+  await flushMicrotasks();
+
+  assert.equal(harness.store.get().length, 1, 'blur 后应走微任务快路径入队');
+  assert.equal(FakeNotification.instances.length, 1, 'hasFocus 失真时仍必须通知');
+});
+
+test('R1b-D1-5 250ms timer 不触发：仍立即 decide/notify，render 不重复', async () => {
+  FakeNotification.reset('granted');
+  const document = createDocument({ visible: true, focused: false });
+  const harness = createApplyHarness({ document, sessionIds: ['s-17'], binding: completedBinding });
+
+  completeRun(harness, 's-17');
+  await flushMicrotasks();
+  // 刻意不推进假时钟：证明不依赖 250ms coalesce timer。
+  assert.equal(harness.store.get().length, 1, '未触发 250ms timer 也必须入队');
+  assert.equal(FakeNotification.instances.length, 1, '未触发 250ms timer 也必须通知');
+  const body = FakeNotification.instances[0].options.body;
+
+  const tree = harness.render();
+  const card = cardTreeOf(cardsOf(tree)[0]);
+  assert.equal(lineOf(card), body);
+  assert.equal(FakeNotification.instances.length, 1, '渲染后不得重复');
+});
+
+test('R1b-D1-6 后台通知标题不倒退：error 仍是任务失败', async () => {
+  FakeNotification.reset('granted');
+  const document = createDocument({ visible: false, focused: false });
+  const harness = createApplyHarness({
+    document,
+    sessionIds: ['s-18'],
+    binding: () => ({
+      eventSource: { getSnapshot: () => ({ entries: [turnEnd({ kind: 'error' })] }) },
+    }),
+  });
+
+  completeRun(harness, 's-18');
+  await flushMicrotasks();
+
+  assert.equal(harness.store.get().length, 1);
+  assert.equal(harness.store.get()[0].outcome, 'error');
+  assert.equal(FakeNotification.instances.length, 1);
+  assert.equal(FakeNotification.instances[0].title, '任务失败', '后台快路径不得把 error 降级成 completed');
 });
