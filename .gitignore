@@ -1,0 +1,6 @@
+# 本机权限修复备份（含 SID、ACL 明细与回滚脚本，不入库）
+插件/开发/_acl-recovery/
+
+# 依赖与日志
+node_modules/
+*.log

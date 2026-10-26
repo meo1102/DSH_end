@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Task Complete Toast",
+    "description": "Shows a task-completion hint in the overlay; this skeleton stage registers an empty placeholder only."
+  }
+}
