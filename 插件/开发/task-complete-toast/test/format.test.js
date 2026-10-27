@@ -106,6 +106,100 @@ test('U16b resolveNames：byId/数组/path 末段/会话 title', () => {
   );
 });
 
+// ---------------------------------------------------------------------------
+// V03：真机 WorkspaceSnapshot = { items: WorkspaceView[], ... }；
+// WorkspaceView = { workspaceId, path, title, sessionIds, ... }；
+// SessionListRow 同时有 displayTitle 与 title，界面显示 displayTitle。
+// ---------------------------------------------------------------------------
+
+function workspaceSnapshot(items) {
+  return {
+    items,
+    archivedSessionIds: [],
+    pinnedSessionIds: [],
+    state: 'ready',
+    phase: 'ready',
+    error: null,
+  };
+}
+
+test('T-A WorkspaceSnapshot.items：按 sessionIds 命中并取工区 title', () => {
+  const workspaces = workspaceSnapshot([
+    { workspaceId: 'w-1', path: 'C:\\work\\DSH_end', title: 'DSH_end', sessionIds: ['s-1'] },
+  ]);
+  const sessions = {
+    byId: { 's-1': { id: 's-1', displayTitle: '确认插件项目信息', title: 'legacy' } },
+  };
+
+  assert.deepEqual(namesOf(workspaces, sessions, 's-1'), {
+    workspace: 'DSH_end',
+    session: '确认插件项目信息',
+  });
+});
+
+test('T-B items 里没有该会话：工区回退未分组/Ungrouped', () => {
+  const workspaces = workspaceSnapshot([
+    { workspaceId: 'w-1', title: 'DSH_end', sessionIds: ['s-2'] },
+  ]);
+  const names = namesOf(workspaces, { byId: { 's-1': { displayTitle: 'T' } } }, 's-1');
+
+  assert.equal(names.workspace, undefined);
+  assert.equal(formatLine(tZh, names.workspace, names.session, '待执行'), '未分组[T] · 待执行');
+  assert.equal(formatLine(tEn, names.workspace, names.session, 'Idle'), 'Ungrouped[T] · Idle');
+});
+
+test('T-C workspace 无 title 有 path：取 path 末段', () => {
+  const workspaces = workspaceSnapshot([
+    { workspaceId: 'w-1', path: 'C:\\work\\DSH_end', sessionIds: ['s-1'] },
+  ]);
+
+  assert.deepEqual(namesOf(workspaces, { byId: { 's-1': {} } }, 's-1'), {
+    workspace: 'DSH_end',
+    session: undefined,
+  });
+});
+
+test('T-D 会话名：displayTitle 优先，其次 title，空/缺省回退', () => {
+  const workspaces = workspaceSnapshot([{ title: 'W', sessionIds: ['s-1'] }]);
+
+  assert.equal(
+    namesOf(workspaces, { byId: { 's-1': { displayTitle: '显示名', title: 'legacy' } } }, 's-1').session,
+    '显示名',
+  );
+  assert.equal(
+    namesOf(workspaces, { byId: { 's-1': { title: 'legacy' } } }, 's-1').session,
+    'legacy',
+  );
+  assert.equal(
+    namesOf(workspaces, { byId: { 's-1': { displayTitle: '   ', title: 'legacy' } } }, 's-1').session,
+    'legacy',
+    '空白 displayTitle 视为缺失',
+  );
+  assert.equal(
+    namesOf(workspaces, { byId: { 's-1': {} } }, 's-1').session,
+    undefined,
+  );
+});
+
+test('T-E 旧 byId / 裸数组形状仍可解析（回归）', () => {
+  assert.deepEqual(
+    namesOf(
+      { byId: { w: { title: 'DSH_end', sessionIds: ['s-1'] } } },
+      { byId: { 's-1': { title: 'T' } } },
+      's-1',
+    ),
+    { workspace: 'DSH_end', session: 'T' },
+  );
+  assert.deepEqual(
+    namesOf(
+      [{ title: 'DSH_end', sessionIds: ['s-1'] }],
+      { byId: { 's-1': { displayTitle: 'T' } } },
+      's-1',
+    ),
+    { workspace: 'DSH_end', session: 'T' },
+  );
+});
+
 test('U17 超长名称返回完整文本，不截断（截断交给 CSS）', () => {
   const long = '会'.repeat(400);
   const line = formatLine(tZh, long, long, '待执行');

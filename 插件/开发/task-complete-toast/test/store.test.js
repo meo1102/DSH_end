@@ -65,12 +65,10 @@ function createHarness(options = {}) {
     getBinding: options.getBinding ?? (() => undefined),
     claim: options.claim,
     resetClaims: options.resetClaims,
-    onDiagnostic: options.onDiagnostic,
     isForeground: typeof options.isForeground === 'function'
       ? options.isForeground
       : (options.isForeground === undefined ? undefined : () => options.isForeground),
     resolve: options.resolve,
-    debug: options.debug,
   };
   let statusHandler = null;
 
@@ -404,23 +402,106 @@ test('R2-T2 无 BroadcastChannel 恒胜出（单标签语义）', async () => {
   lease.dispose();
 });
 
-test('R2-T3 decide 时 claim 仍在途：按胜出降级，记录诊断且不抛错', async () => {
+test('R2-T3 decide 时 claim 未决：等满窗口仍 pending 才降级胜出（ADR-015）', async () => {
   const clock = createClock();
-  const diagnostics = [];
   const harness = createHarness({
     clock,
     list: { phase: 'ready', ids: ['r2-3'], byId: { 'r2-3': { running: true } } },
+    isForeground: false,
     claim: () => new Promise(() => {}),
-    onDiagnostic: (code, id) => diagnostics.push({ code, id }),
   });
 
   harness.status('r2-3', true);
   clock.advance(2000);
   harness.status('r2-3', false);
-  assert.doesNotThrow(() => clock.advance(250));
+  await flushMicrotasks();
 
-  assert.equal(itemsOf(harness.store).length, 1, '仍在途时按胜出处理');
-  assert.deepEqual(diagnostics, [{ code: 'claim-pending-at-decide', id: 'r2-3' }]);
+  assert.deepEqual(itemsOf(harness.store), [], '未决期间不得立即胜出入队');
+  assert.equal(clock.pending(), 1, '应在等待认领窗计时器');
+
+  clock.advance(80);
+
+  assert.equal(itemsOf(harness.store).length, 1, '窗口结束仍 pending 才按胜出处理');
+});
+
+test('R2-T9 等待认领期间变为 lost：立即丢弃、不入队、不通知', async () => {
+  const clock = createClock();
+  let resolveClaim;
+  const harness = createHarness({
+    clock,
+    list: { phase: 'ready', ids: ['r2-9'], byId: { 'r2-9': { running: true } } },
+    isForeground: false,
+    claim: () => new Promise((resolve) => {
+      resolveClaim = resolve;
+    }),
+  });
+
+  harness.status('r2-9', true);
+  clock.advance(2000);
+  harness.status('r2-9', false);
+  await flushMicrotasks();
+  assert.equal(clock.pending(), 1, '应处于等待认领窗');
+
+  resolveClaim(false); // 窗口内收到更小的 tabId → 本标签判负
+  await flushMicrotasks();
+
+  assert.deepEqual(itemsOf(harness.store), [], 'lost 不得入队（通知由条目驱动，故也不通知）');
+  assert.equal(clock.pending(), 0, '二次判定应立即取消等待计时器');
+  clock.advance(500);
+  assert.deepEqual(itemsOf(harness.store), []);
+});
+
+test('R2-T10 等待认领期间 connection/reset：取消等待、不写状态、不抛错', async () => {
+  const clock = createClock();
+  let resolveClaim;
+  const harness = createHarness({
+    clock,
+    list: { phase: 'ready', ids: ['r2-10'], byId: { 'r2-10': { running: true } } },
+    isForeground: false,
+    claim: () => new Promise((resolve) => {
+      resolveClaim = resolve;
+    }),
+  });
+
+  harness.status('r2-10', true);
+  clock.advance(2000);
+  harness.status('r2-10', false);
+  await flushMicrotasks();
+  assert.equal(clock.pending(), 1, '应处于等待认领窗');
+
+  assert.doesNotThrow(() => harness.store.reset());
+  assert.equal(clock.pending(), 0, 'reset 必须取消等待计时器');
+
+  resolveClaim(true); // 迟到的胜出结果
+  await flushMicrotasks();
+  clock.advance(500);
+
+  assert.deepEqual(itemsOf(harness.store), [], 'reset 后迟到结果必须被 state/generation 守卫丢弃');
+});
+
+test('R2-T11 等待认领产生的额外延迟 ≤ claimWindowMs', async () => {
+  const clock = createClock();
+  const harness = createHarness({
+    clock,
+    list: { phase: 'ready', ids: ['r2-11'], byId: { 'r2-11': { running: true } } },
+    isForeground: false,
+    claim: () => new Promise(() => {}),
+  });
+
+  harness.status('r2-11', true);
+  clock.advance(2000);
+  harness.status('r2-11', false);
+  await flushMicrotasks();
+  assert.equal(itemsOf(harness.store).length, 0, '窗口内不得入队');
+
+  clock.advance(79);
+  assert.equal(itemsOf(harness.store).length, 0, '79ms 时仍在认领窗内');
+
+  clock.advance(1);
+
+  const items = itemsOf(harness.store);
+  assert.equal(items.length, 1);
+  assert.ok(items[0].at - 2000 <= 80, `额外延迟 ${items[0].at - 2000}ms 超过 claimWindowMs`);
 });
 
 test('R2-T4 认领频道/消息形状、reset 清计时器并关闭通道、重置后可复用', async () => {

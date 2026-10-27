@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { loadClientModule } from './harness.js';
 
 const { factory } = loadClientModule();
-const { createNotifier } = factory.__test__;
+const { createNotifier, hash16 } = factory.__test__;
 
 const ITEM = {
   key: 'k-1',
@@ -110,9 +110,30 @@ test('N01 auto + 隐藏 + granted：发送通知，内容与 tag 正确', async 
   const notification = FakeNotification.instances[0];
   assert.equal(notification.title, '任务完成');
   assert.equal(notification.options.body, '插件[Toast] · 待执行');
-  assert.equal(notification.options.tag, 'dsh-task-s-1');
+  assert.equal(notification.options.tag, `dsh-task-${hash16('k-1')}`);
   assert.equal(notification.options.renotify, false);
 
+  notifier.dispose();
+});
+
+test('N11 同会话不同条目：tag 唯一、≤34 字符、含固定前缀，renotify 保持 false（V13）', async () => {
+  FakeNotification.reset();
+  const document = createDocument({ visible: false, focused: false });
+  const { env } = createEnv({ document, permission: 'granted' });
+  const notifier = createNotifier(env, (key) => key, { systemNotification: 'auto' });
+
+  await notifier.notify(ITEM);
+  await notifier.notify({ ...ITEM, key: 'k-2' });
+
+  assert.equal(FakeNotification.instances.length, 2);
+  const [first, second] = FakeNotification.instances;
+  assert.notEqual(first.options.tag, second.options.tag, '同会话两条通知的 tag 必须不同');
+  for (const notification of FakeNotification.instances) {
+    assert.match(notification.options.tag, /^dsh-task-[0-9a-f]{16}$/);
+    // Electron #40433：Windows 11 上 web 通知 tag 超过 34 字符即失效；这里按上限卡死。
+    assert.ok(notification.options.tag.length <= 34, `tag 超长：${notification.options.tag.length}`);
+    assert.equal(notification.options.renotify, false);
+  }
   notifier.dispose();
 });
 

@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { createFakeCtx, loadClientModule, renderSlotElement, slotChildProps } from './harness.js';
 
 const { factory } = loadClientModule();
-const { createNotifier, createStore } = factory.__test__;
+const { createNotifier, createStore, hash16 } = factory.__test__;
 
 const ITEM = {
   key: 'k-1',
@@ -297,7 +297,7 @@ test('P01 隐藏时入队：notifier 被调用，正文与浮层第二行逐字�
   const notification = FakeNotification.instances[0];
   assert.equal(notification.options.body, line, '通知正文必须与浮层第二行一致');
   assert.equal(notification.title, titleOfCard(card), '标题也必须同源');
-  assert.equal(notification.options.tag, 'dsh-task-s-1');
+  assert.equal(notification.options.tag, `dsh-task-${hash16(harness.store.get()[0].key)}`);
 });
 
 test('P02 可见时入队：不发送系统通知', async () => {
@@ -716,7 +716,7 @@ test('R1b-D1-1 隐藏且从未渲染：入队即发通知', async () => {
   const notification = FakeNotification.instances[0];
   assert.equal(notification.title, '任务完成');
   assert.equal(notification.options.body, '未分组[未命名会话] · 待执行', '名称缺失也必须发，且落回退文案');
-  assert.equal(notification.options.tag, 'dsh-task-s-13');
+  assert.equal(notification.options.tag, `dsh-task-${hash16(harness.store.get()[0].key)}`);
 });
 
 test('R1b-D1-2 可见未聚焦（被遮挡）：入队即发；渲染后不重复', async () => {

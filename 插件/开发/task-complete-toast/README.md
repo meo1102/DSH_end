@@ -100,7 +100,9 @@ node --test --test-isolation=none test/smoke.test.js test/integration.test.js te
 - 当前 GUI 页面需再次刷新以加载 R1b-D1 第二版修复；刷新前仍是旧客户端。
 - R1b-D1 第二版：前台标志 + 后台微任务 decide；遮挡下仍可能受 blur 未触发/事件冻结影响，V13 待复测。
 - 文案已改为 zh/en 运行时字典并跟随 `ctx.locale`；语言切换的真实重渲染未在页面观察。
-- 卡片第二行状态固定用 `statusIdle`：P1 裁决 v1.1 按设计固定（完成瞬间 Agent 空闲），动态状态留 v1.2；不列为缺陷。
+- 状态行固定「待执行」（`statusIdle`）：P1 裁决 v1.1 按设计固定（完成瞬间 Agent 空闲），动态状态留 v1.2；不列为缺陷。
+- 点击系统通知只会 `openSession` 打开会话，**不会激活/置前 Electron 窗口**（Electron + Windows AUMID 限制；V07 线上记录）。
+- `Notification.permission` 在 Electron 实测恒为 `granted`；`denied → deferred` 路径仅由单测覆盖，真机 V14 挂账。
 - 真实路由、真实 `fetch`、200 ms 预算与外部取消只在单测夹具下验证，未在页面请求真实路由。
 - Esc 按 WP3 补遗关闭“队列最新”一条；当前渲染顺序仍按 §6.5“最新在下”，因此像素最上是最旧，两者在旧文案中存在冲突（见报告）。
 - 通知已接 apply，但真实 OS 通知、权限弹窗、Electron 的 `default` 权限行为、点击回跳与 `onclose` 均未在页面观察。

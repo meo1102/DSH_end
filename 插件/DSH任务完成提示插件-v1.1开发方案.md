@@ -385,7 +385,7 @@ task-complete-toast/
 | 1 | 判定是否走系统通知：`always`，或 `auto` 且 `visibilityState!=='visible' \|\| hidden \|\| !hasFocus()` |
 | 2 | `Notification` 不存在或 `permission==='denied'` → 直接进 `deferred` |
 | 3 | `default` 时只在页面可见且由用户手势触发才申请，不在隐藏时申请 |
-| 4 | 发送：标题 `titleOf`，正文与浮层第二行完全一致，`tag='dsh-task-'+sessionId`，`renotify:false` |
+| 4 | 发送：标题 `titleOf`，正文与浮层第二行完全一致，`tag='dsh-task-'+sessionId+'-'+item.key`（**每条唯一**，ADR-014），`renotify:false` |
 | 5 | `onclick`：`window.focus()` → `openSession` → `close()` |
 | 6 | 异常或构造失败 → 进 `deferred`，恢复可见时补弹并清空该条 |
 | 7 | `dispose`：移除监听、关闭已发通知（尽力而为） |
@@ -1058,3 +1058,4 @@ WP0 ─┬─▶ WP1 ─┬─▶ WP5 ─┐
 | ADR-011 | R2 多标签：`tabId` 字符串、字典序最小胜出；`settling` 起点与 resolver 并行；`decide` 检查 | 无 leader、无存储、可测；80 ms < 250 ms 观察窗 | 增加 0–80 ms 延迟；pending 时降级为胜出 | leader 选举 / 持久锁 |
 | ADR-012 | v1.1 验收改为 109 基线 + R2 + V01–V28 + P01–P05 + C01–C36；状态固定 `statusIdle`；Config 面板不支持接受 | 与实际实现和 P0 事实对齐；避免用不存在的 U20/I8 计数 | 配置只能走 patch；动态状态延后 | 坚持旧 U20/I8/V26 数字 |
 | ADR-013 | 弹窗消失计时：移入/焦点取消，移出/失焦后重新完整 5 s | 用户确认的新需求；不保留剩余时间 | 每次移出都延后最多 5 s；旧验证作废 | 暂停/恢复剩余（旧） |
+| ADR-014 | 系统通知 `tag` 改为每条唯一（`dsh-task-<sessionId>-<item.key>`） | Windows 对已用过的 tag 只做静默更新，`renotify:true` 也不恢复横幅；V13 两版修复方向有误 | 通知中心同会话可多条；OS 层不再「只留最新」 | 固定 tag + renotify / 去掉 tag |

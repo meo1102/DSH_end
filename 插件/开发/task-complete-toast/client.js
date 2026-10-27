@@ -91,6 +91,27 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * V13：Windows/Electron 的 web 通知 tag 超过 34 字符即失效
+     * （electron/electron#40433；WinRT `ToastNotification.Tag` 另有 64 字符上限）。
+     * 用两个不同种子的 FNV-1a 32 位拼成 16 位十六进制，前缀 9 + 16 = 25 字符；
+     * 纯函数、零依赖、确定性，同一 key 恒得同一 tag，不同 key 近似唯一。
+     */
+    function hash16(value) {
+      const text = typeof value === 'string' ? value : '';
+      const fnv = (seed) => {
+        let hash = seed >>> 0;
+        for (let index = 0; index < text.length; index += 1) {
+          hash ^= text.charCodeAt(index);
+          hash = Math.imul(hash, 0x01000193) >>> 0;
+        }
+        return hash >>> 0;
+      };
+      const first = fnv(0x811c9dc5);
+      const second = fnv(0x9e3779b9);
+      return `${first.toString(16).padStart(8, '0')}${second.toString(16).padStart(8, '0')}`;
+    }
+
+    /**
      * 读取注入的客户端配置（§7.2 / ADR-009）：只认已知字段，逐字段校验，
      * 类型不符或读取异常时忽略该字段，绝不抛错。
      */
@@ -125,10 +146,12 @@ window.__ModuleLoader__.load({
       return trimmed.length > 0 ? trimmed : undefined;
     }
 
-    /** 把 useWorkspaces 的数组/ byId 快照统一成数组。 */
+    /** 把 useWorkspaces 的 `items` / byId / 裸数组快照统一成数组。 */
     function workspaceList(snapshot) {
       if (Array.isArray(snapshot)) return snapshot;
       if (snapshot === null || typeof snapshot !== 'object') return [];
+      // V03 真机形状：WorkspaceSnapshot.items 是 WorkspaceView[]。
+      if (Array.isArray(snapshot.items)) return snapshot.items;
       const byId = snapshot.byId;
       if (byId !== null && typeof byId === 'object') {
         if (typeof byId.get === 'function') return [...byId.values()];
@@ -150,13 +173,11 @@ window.__ModuleLoader__.load({
       return false;
     }
 
-    /** 工作区名：title → name → path 末段；都没有返回 undefined。 */
+    /** 工作区名：title → path 末段（V03 真机 WorkspaceView 无 name）；都没有返回 undefined。 */
     function workspaceTitle(workspace) {
       if (workspace === null || typeof workspace !== 'object') return undefined;
       const title = cleanName(workspace.title);
       if (title !== undefined) return title;
-      const name = cleanName(workspace.name);
-      if (name !== undefined) return name;
       const path = cleanName(workspace.path);
       if (path === undefined) return undefined;
       const parts = path.split(/[\\/]+/).filter(Boolean);
@@ -174,8 +195,9 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 名称解析：先按 sessionIds 找工作区，再取会话 byId.title；
+     * 名称解析：先按 sessionIds 找工作区，再取会话显示名；
      * 缺值返回 undefined，由 formatLine 落到回退文案。
+     * 会话名优先 displayTitle（界面实际显示的值），缺失再回退 title。
      */
     function resolveNames(workspacesSnapshot, sessionsSnapshot, sessionId) {
       const workspace = workspaceList(workspacesSnapshot)
@@ -183,7 +205,7 @@ window.__ModuleLoader__.load({
       const row = sessionRow(sessionsSnapshot, sessionId);
       return {
         workspace: workspaceTitle(workspace),
-        session: cleanName(row?.title) ?? cleanName(row?.name),
+        session: cleanName(row?.displayTitle) ?? cleanName(row?.title),
       };
     }
 
@@ -615,13 +637,17 @@ window.__ModuleLoader__.load({
       }
 
       /**
-       * R2：在 settling 起点与 resolver 并行发起认领（不 await、不串行）。
-       * 未注入 claim / claim 抛错 → 视作胜出；仍在途 → decide 时降级胜出。
+       * R2 / ADR-015：在 settling 起点与 resolver 并行发起认领（不 await、不串行）。
+       * 未注入 claim / claim 抛错 → 视作胜出；未决时由 decide 等窗口结束再判定。
        */
       function startClaim(id, state, generation) {
         state.claim = { status: 'none' };
+        state.claimStartedAt = undefined;
+        state.claimWaited = false;
+        state.awaitingClaim = false;
         if (typeof env.claim !== 'function') return;
         state.claim = { status: 'pending' };
+        state.claimStartedAt = now();
         let promise;
         try {
           promise = env.claim(id);
@@ -630,16 +656,46 @@ window.__ModuleLoader__.load({
           return;
         }
         Promise.resolve(promise).then(
-          (won) => {
-            if (states.get(id) !== state || state.mode !== 'settling' || state.generation !== generation) return;
-            state.claim = { status: won === false ? 'lost' : 'won' };
-          },
+          (won) => settleClaim(id, state, generation, won === false ? 'lost' : 'won'),
           () => {
-            if (states.get(id) !== state || state.mode !== 'settling' || state.generation !== generation) return;
             // 认领基础设施错误按胜出处理（失败开放），不让底层异常吞掉提示。
-            state.claim = { status: 'won' };
+            settleClaim(id, state, generation, 'won');
           },
         );
+      }
+
+      /**
+       * ADR-015：认领结果到达。若 decide 正在等这个窗口，立刻二次判定，
+       * 不必等满 remaining；否则只写结果，等 decide 读取。
+       */
+      function settleClaim(id, state, generation, status) {
+        if (states.get(id) !== state || state.mode !== 'settling' || state.generation !== generation) return;
+        state.claim = { status };
+        if (state.awaitingClaim !== true) return;
+        state.awaitingClaim = false;
+        if (state.timer !== undefined) {
+          cancelTimer(state.timer);
+          state.timer = undefined;
+        }
+        decide(id, state);
+      }
+
+      /**
+       * ADR-015：认领未决时保持 settling，延迟 remaining（≤ claimWindowMs）后
+       * 再决定；claimWaited 标记防止二次判定再次延迟。延迟保存在 state.timer，
+       * 由 running 回弹 / connection reset / 卸载统一取消。
+       */
+      function waitForClaim(id, state, generation, remaining) {
+        state.mode = 'settling';
+        state.claimWaited = true;
+        state.awaitingClaim = true;
+        state.timer = scheduleTimer(() => {
+          if (states.get(id) !== state) return;
+          if (state.mode !== 'settling' || state.generation !== generation) return;
+          state.timer = undefined;
+          state.awaitingClaim = false;
+          decide(id, state);
+        }, Math.min(remaining, settings.claimWindowMs));
       }
 
       /** decide 时读取结果：未注入 resolver → pending；仍在途 → 按 v1 降级 completed。 */
@@ -672,32 +728,28 @@ window.__ModuleLoader__.load({
 
         state.mode = 'unknown';
         state.timer = undefined;
+        state.awaitingClaim = false;
         const startedAt = state.startedAt;
         const nowMs = now();
         const list = readList();
         const row = list?.byId?.[id];
         const finish = () => {
+          clearSettle(state);
           cancelClaim(id, state);
           abortResolution(state);
           states.delete(id);
         };
 
-        env.debug?.('decide', {
-          sessionId: id,
-          claim: state.claim?.status,
-          resolution: state.resolution?.status,
-          foreground: typeof env.isForeground === 'function' ? env.isForeground() : undefined,
-        });
-
-        // R2：认领明确失败时直接结束，不入队、不通知、不更新冷却/发射计数。
+        // R2 / ADR-015：认领明确失败 → 直接结束；未决 → 先等窗口结束再判定。
         const claimStatus = state.claim?.status ?? 'none';
         if (claimStatus === 'lost') return finish();
-        if (claimStatus === 'pending' && typeof env.onDiagnostic === 'function') {
-          try {
-            // 降级：decide 时认领仍在途，按胜出处理但不阻塞提示。
-            env.onDiagnostic('claim-pending-at-decide', id);
-          } catch {
-            // 诊断失败不影响主流程。
+        if (claimStatus === 'pending' && state.claimWaited !== true) {
+          const claimStartedAt = typeof state.claimStartedAt === 'number' ? state.claimStartedAt : nowMs;
+          const remaining = claimStartedAt + settings.claimWindowMs - nowMs;
+          if (remaining > 0) {
+            // 保持 settling，等满剩余窗口后二次判定；期间不入队。
+            waitForClaim(id, state, state.generation, remaining);
+            return;
           }
         }
 
@@ -756,8 +808,6 @@ window.__ModuleLoader__.load({
             const waiting = state.resolutionPromise;
             if (waiting !== undefined && waiting !== null) {
               Promise.resolve(waiting).then(run, run);
-            } else {
-              env.debug?.('background:no-resolution-promise', { sessionId: id });
             }
             return;
           }
@@ -790,7 +840,6 @@ window.__ModuleLoader__.load({
 
         if (running !== false) return;
         if (state === undefined) state = { mode: 'unknown', sawRunning: false, startedAt: 0 };
-        env.debug?.('status:false', { sessionId: id, mode: state.mode });
 
         if (state.mode === 'running') {
           const generation = (state.generation ?? 0) + 1;
@@ -813,11 +862,6 @@ window.__ModuleLoader__.load({
             // 遮挡/最小化：不等 timer，微任务尽快 decide/notify。
             scheduleBackgroundDecide(id, state, generation);
           }
-          env.debug?.('settle:schedule', {
-            sessionId: id,
-            foreground,
-            mode: foreground ? 'coalesce-timer' : 'microtask',
-          });
           return;
         }
 
@@ -1166,9 +1210,7 @@ window.__ModuleLoader__.load({
         cancelClaim: claims?.cancelClaim,
         resetClaims: claims?.resetClaims,
         onEnqueued: claims?.onEnqueued,
-        onDiagnostic: claims?.onDiagnostic,
         isForeground: claims?.isForeground,
-        debug: claims?.debug,
       };
     }
 
@@ -1654,44 +1696,10 @@ window.__ModuleLoader__.load({
       };
     }
 
-    /** 一轮临时诊断日志：带可见性快照，不含会话标题/路径。 */
-    function createDebugLogger(win, getForeground) {
-      return (event, data) => {
-        try {
-          const consoleObj = win?.console;
-          if (consoleObj === null || typeof consoleObj?.debug !== 'function') return;
-          const doc = win?.document;
-          let hasFocus;
-          try {
-            hasFocus = typeof doc?.hasFocus === 'function' ? doc.hasFocus() : undefined;
-          } catch {
-            hasFocus = undefined;
-          }
-          let foreground;
-          try {
-            foreground = typeof getForeground === 'function' ? getForeground() : undefined;
-          } catch {
-            foreground = undefined;
-          }
-          consoleObj.debug('[task-complete-toast]', {
-            event,
-            at: Date.now(),
-            visibilityState: doc?.visibilityState,
-            hidden: doc?.hidden,
-            hasFocus,
-            foreground,
-            ...(data ?? {}),
-          });
-        } catch {
-          // 诊断日志不得影响主流程。
-        }
-      };
-    }
-
     /**
      * 系统通知与补弹（§6.6）。只负责权限、可见性与补弹，不判断“是否算完成”。
      * env: { document, Notification, window, openSession, hasUserActivation,
-     *        texts?, requeue?, isForeground?, debug? }
+     *        texts?, requeue?, isForeground? }
      *
      * D1：permission='default' 也先尝试构造发送；只有构造抛错才 deferred。
      * D3：通知关闭/onclose/点击后从 issued 移除。
@@ -1704,7 +1712,6 @@ window.__ModuleLoader__.load({
       const win = env?.window;
       const NotificationCtor = env?.Notification;
       const texts = env?.texts;
-      const debug = typeof env?.debug === 'function' ? env.debug : () => {};
       const deferred = new Map();
       const issued = new Set();
       let disposed = false;
@@ -1765,7 +1772,10 @@ window.__ModuleLoader__.load({
         try {
           const notification = new NotificationCtor(item.title, {
             body: item.line,
-            tag: `dsh-task-${item.sessionId ?? ''}`,
+            // V13 根因：Windows 对已用过的 tag 走静默更新，`renotify` 也不救。
+            // tag 压到 25 字符（9 前缀 + 16 哈希）以满足 Electron #40433 的 34 字符上限；
+            // 用 item.key 哈希保证同会话每条完成都唯一，避免第二次完成无声。
+            tag: `dsh-task-${hash16(item.key ?? '')}`,
             renotify: false,
           });
           const forget = () => issued.delete(notification);
@@ -1815,26 +1825,15 @@ window.__ModuleLoader__.load({
 
       async function notify(item) {
         if (disposed || item === null || typeof item !== 'object') {
-          debug('notify:skip', { reason: 'disposed', sessionId: item?.sessionId });
           return 'skipped';
         }
         if (settings.systemNotification === 'never') {
-          debug('notify:skip', { reason: 'never', sessionId: item.sessionId });
           return 'skipped';
         }
         if (settings.systemNotification === 'auto' && isPageVisible()) {
-          debug('notify:skip', { reason: 'visible-focused', sessionId: item.sessionId });
           return 'skipped';
         }
-        debug('notify:deliver', {
-          sessionId: item.sessionId,
-          systemNotification: settings.systemNotification,
-        });
         const status = await send(enrich(item));
-        debug(`notify:${status}`, {
-          sessionId: item.sessionId,
-          permission: NotificationCtor?.permission,
-        });
         return status;
       }
 
@@ -1914,10 +1913,9 @@ window.__ModuleLoader__.load({
         ctx.effect(() => ctx.locale.register(LOCALE_NS, 'en', en));
         const t = ctx.locale.bind(LOCALE_NS);
 
-        // R1b-D1：前台标志用 window focus/blur 维护；日志保留一轮供用户复测。
+        // R1b-D1：前台标志用 window focus/blur 维护。
         const foreground = createForegroundTracker(win, win?.document);
         ctx.effect(() => () => foreground.dispose());
-        const debug = createDebugLogger(win, () => foreground.isForeground());
         const isForegroundPage = () => {
           if (foreground.isForeground() !== true) return false;
           const doc = win?.document;
@@ -1955,16 +1953,8 @@ window.__ModuleLoader__.load({
           onEnqueued: (item) => {
             if (notifyEnqueued !== null) notifyEnqueued(item);
           },
-          onDiagnostic: (code) => {
-            try {
-              win?.console?.debug?.(`task-complete-toast: ${code}`);
-            } catch {
-              // 诊断输出失败不影响主流程。
-            }
-          },
           isForeground: isForegroundPage,
           isFocused: () => foreground.isForeground(),
-          debug,
         }), config);
         ctx.effect(() => ctx.on('connection/reset', () => store.reset()));
 
@@ -1981,7 +1971,6 @@ window.__ModuleLoader__.load({
           },
           texts,
           isForeground: () => foreground.isForeground(),
-          debug,
           requeue: (item) => {
             const next = store.requeue(item);
             // 新一轮浮层已经出现，通知由 onVisible 自己的重试路径负责，避免重复。
@@ -2017,11 +2006,6 @@ window.__ModuleLoader__.load({
         /** 入队即通知；同一 key 只发一次，渲染后不得重复。 */
         function notifyEnqueuedNow(item) {
           if (item === null || typeof item !== 'object') return;
-          debug('onEnqueued', {
-            sessionId: item.sessionId,
-            key: item.key,
-            handled: handled.has(item.key),
-          });
           if (handled.has(item.key)) return;
           let text;
           try {
@@ -2111,6 +2095,7 @@ window.__ModuleLoader__.load({
         createClaimLease,
         createTabId,
         createNotifier,
+        hash16,
       },
     };
   },
