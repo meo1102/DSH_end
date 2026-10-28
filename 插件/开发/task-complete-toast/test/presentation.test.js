@@ -144,7 +144,7 @@ function readyList(ids) {
 }
 
 function turnEnd(reason) {
-  return { type: 'event', event: { type: 'turn/end', data: { reason } } };
+  return { type: 'event', event: { type: 'turn/end', data: { reason }, time: Date.now() } };
 }
 
 function completedBinding() {

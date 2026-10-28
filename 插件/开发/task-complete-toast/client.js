@@ -603,7 +603,8 @@ window.__ModuleLoader__.load({
         state.controller = controller;
         let promise;
         try {
-          promise = env.resolve(id, controller === null ? undefined : controller.signal);
+          // ADR-016：since = 本轮 running 起点，供 resolver 过滤陈旧结果。
+          promise = env.resolve(id, controller === null ? undefined : controller.signal, state.startedAt);
         } catch {
           state.resolution = { status: 'done', outcome: 'completed' };
           return;
@@ -1039,13 +1040,15 @@ window.__ModuleLoader__.load({
      *   clearTimeout: (id: unknown) => void
      * }} env
      * @param {{routePath?: string, resolveBudgetMs?: number, bridge?: 'auto'|'off'}} [config]
-     * @returns {{resolve: (sessionId: string, signal?: AbortSignal) => Promise<{outcome: string, source: string}>}}
+     * @returns {{resolve: (sessionId: string, signal?: AbortSignal, since?: number) => Promise<{outcome: string, source: string}>}}
      */
     function createResolver(env, config) {
       const settings = { ...DEFAULTS, ...(config ?? {}) };
       const budgetMs = Number.isFinite(settings.resolveBudgetMs) && settings.resolveBudgetMs >= 0
         ? settings.resolveBudgetMs
         : DEFAULTS.resolveBudgetMs;
+      const SKEW_MS = 100;
+      const RETRY_MS = 40;
       const routePath = typeof settings.routePath === 'string' && settings.routePath.length > 0
         ? settings.routePath
         : DEFAULTS.routePath;
@@ -1053,8 +1056,21 @@ window.__ModuleLoader__.load({
 
       const fallback = () => ({ outcome: 'completed', source: 'fallback' });
 
-      /** 快路径：最后一条 `turn/end`；没有 binding/窗口/事件时返回 undefined。 */
-      function outcomeFromBinding(sessionId) {
+      /** since 缺省（非数字）时不过滤，保持旧行为。 */
+      function isFresh(stamp, since) {
+        if (typeof since !== 'number') return true;
+        return typeof stamp === 'number' && stamp >= since - SKEW_MS;
+      }
+
+      /** `turn/end` 的落盘时间：`entry.event.time`（兼容外层 `entry.time`）。 */
+      function eventTime(entry) {
+        const inner = entry?.event?.time;
+        if (typeof inner === 'number') return inner;
+        return typeof entry?.time === 'number' ? entry.time : undefined;
+      }
+
+      /** 快路径：since 之后（含 SKEW）的最后一条 `turn/end`；没有返回 undefined。 */
+      function outcomeFromBinding(sessionId, since) {
         try {
           if (typeof env?.getBinding !== 'function') return undefined;
           const binding = env.getBinding(sessionId);
@@ -1064,6 +1080,7 @@ window.__ModuleLoader__.load({
           for (let index = entries.length - 1; index >= 0; index -= 1) {
             const entry = entries[index];
             if (entry?.type !== 'event' || entry.event?.type !== 'turn/end') continue;
+            if (!isFresh(eventTime(entry), since)) continue;
             return classify(entry.event?.data?.reason).outcome;
           }
           return undefined;
@@ -1073,37 +1090,90 @@ window.__ModuleLoader__.load({
         }
       }
 
-      async function resolve(sessionId, signal) {
+      /**
+       * 单次慢路径尝试。freshness：`since` 是数字时只接受 `at >= since - SKEW`；
+       * 陈旧/缺失 at 返回 stale，交给 resolve 的重试循环。
+       */
+      async function readRoute(sessionId, since, controller, cancelPromise, cancelled) {
         try {
-          // 1. 快路径：命中即返回，绝不发 fetch（R01）。
-          const fromBinding = outcomeFromBinding(sessionId);
-          if (fromBinding !== undefined) return { outcome: fromBinding, source: 'binding' };
+          const url = `${routePath}?sessionId=${encodeURIComponent(sessionId)}`;
+          const init = { cache: 'no-store' };
+          if (controller !== null) init.signal = controller.signal;
 
-          // 2. 慢路径前置：桥关闭时直接降级（R08）。
-          if (bridgeOff) return fallback();
-          if (typeof env?.fetch !== 'function') return fallback();
+          const request = Promise.resolve()
+            .then(() => env.fetch(url, init))
+            .then(
+              (response) => ({ kind: 'response', response }),
+              () => ({ kind: 'error' }),
+            );
+          const raced = await Promise.race([request, cancelPromise]);
+          if (raced === cancelled) return { kind: 'cancel' };
+          if (raced.kind !== 'response') return { kind: 'invalid' };
+
+          const response = raced.response;
+          if (response === null || typeof response !== 'object' || response.ok !== true) {
+            return { kind: 'invalid' };
+          }
+
+          const bodyOutcome = await Promise.race([
+            Promise.resolve()
+              .then(() => response.json())
+              .then(
+                (value) => ({ kind: 'body', value }),
+                () => ({ kind: 'error' }),
+              ),
+            cancelPromise,
+          ]);
+          if (bodyOutcome === cancelled) return { kind: 'cancel' };
+          if (bodyOutcome.kind !== 'body') return { kind: 'invalid' };
+
+          const value = bodyOutcome.value;
+          const outcome = value?.outcome;
+          if (typeof outcome !== 'string' || !ROUTE_OUTCOMES.has(outcome)) {
+            return { kind: 'invalid' };
+          }
+          if (!isFresh(value?.at, since)) return { kind: 'stale' };
+          return { kind: 'value', outcome };
+        } catch {
+          return { kind: 'invalid' };
+        }
+      }
+
+      async function resolve(sessionId, signal, since) {
+        const retryEnabled = typeof since === 'number';
+        try {
           if (signal?.aborted === true) return fallback();
 
+          const startedAt = typeof env?.now === 'function' ? env.now() : Date.now();
           const controller = typeof AbortController === 'function' ? new AbortController() : null;
-          const abortUpstream = () => {
+          const cancelled = { kind: 'cancelled' };
+          let settleCancel = () => {};
+          const cancelPromise = new Promise((resolvePromise) => {
+            settleCancel = resolvePromise;
+          });
+          let cancelRequested = false;
+          let timedOut = false;
+          let retryTimer = null;
+
+          const cancel = () => {
+            if (cancelRequested) return;
+            cancelRequested = true;
             try {
               controller?.abort?.();
             } catch {
               // 取消失败不影响降级返回。
             }
-          };
-
-          const cancelled = { kind: 'cancelled' };
-          let settleCancel;
-          const cancelPromise = new Promise((resolvePromise) => {
-            settleCancel = resolvePromise;
-          });
-          const cancel = () => {
-            abortUpstream();
+            if (retryTimer !== null && typeof env?.clearTimeout === 'function') {
+              try {
+                env.clearTimeout(retryTimer);
+              } catch {
+                // 清理失败不影响后续返回。
+              }
+              retryTimer = null;
+            }
             settleCancel(cancelled);
           };
 
-          let timedOut = false;
           const timer = typeof env?.setTimeout === 'function'
             ? env.setTimeout(() => {
               timedOut = true;
@@ -1120,46 +1190,38 @@ window.__ModuleLoader__.load({
           }
 
           try {
-            const url = `${routePath}?sessionId=${encodeURIComponent(sessionId)}`;
-            const init = { cache: 'no-store' };
-            if (controller !== null) init.signal = controller.signal;
+            for (;;) {
+              if (cancelRequested || signal?.aborted === true) return fallback();
 
-            const request = Promise.resolve()
-              .then(() => env.fetch(url, init))
-              .then(
-                (response) => ({ kind: 'response', response }),
-                () => ({ kind: 'error' }),
-              );
-            const raced = await Promise.race([request, cancelPromise]);
+              // 1. 快路径：有新鲜命中即返回，绝不发 fetch。
+              const fromBinding = outcomeFromBinding(sessionId, since);
+              if (fromBinding !== undefined) return { outcome: fromBinding, source: 'binding' };
 
-            // 3. 超时 / 外部取消 / 网络错 → fallback。
-            if (raced === cancelled || timedOut) return fallback();
-            if (raced.kind !== 'response') return fallback();
+              // 2. 慢路径前置：桥关闭/无 fetch 时直接降级（R08）。
+              if (bridgeOff) return fallback();
+              if (typeof env?.fetch !== 'function') return fallback();
 
-            const response = raced.response;
-            // 4. 非 2xx（404/400/其他）→ fallback。
-            if (response === null || typeof response !== 'object' || response.ok !== true) return fallback();
+              const route = await readRoute(sessionId, since, controller, cancelPromise, cancelled);
+              if (route.kind === 'value') return { outcome: route.outcome, source: 'route' };
+              if (route.kind === 'cancel') return fallback();
 
-            // 5. 200 但 JSON 非法 → fallback；JSON 读取也受同一预算约束。
-            const bodyOutcome = await Promise.race([
-              Promise.resolve()
-                .then(() => response.json())
-                .then(
-                  (value) => ({ kind: 'body', value }),
-                  () => ({ kind: 'error' }),
-                ),
-              cancelPromise,
-            ]);
-            if (bodyOutcome === cancelled || timedOut) return fallback();
-            if (bodyOutcome.kind !== 'body') return fallback();
-            if (signal?.aborted === true) return fallback();
+              // 3. 无 since（旧调用/测试）保持一次尝试后降级。
+              if (retryEnabled !== true || timedOut === true) return fallback();
 
-            const outcome = bodyOutcome.value?.outcome;
-            // 6. 合法枚举 → route；未知/缺失值按 completed 处理并标 fallback（R07）。
-            if (typeof outcome === 'string' && ROUTE_OUTCOMES.has(outcome)) {
-              return { outcome, source: 'route' };
+              // 4. 新鲜度未决：40ms 后重试，直到预算耗尽；外部取消立即返回。
+              const nowMs = typeof env?.now === 'function' ? env.now() : Date.now();
+              const remaining = budgetMs - (nowMs - startedAt);
+              if (remaining <= 0) return fallback();
+              const delay = Math.min(RETRY_MS, remaining);
+              const waited = await new Promise((resolveWait) => {
+                retryTimer = env.setTimeout(() => {
+                  retryTimer = null;
+                  resolveWait({ kind: 'slept' });
+                }, delay);
+                cancelPromise.then(() => resolveWait(cancelled));
+              });
+              if (waited === cancelled) return fallback();
             }
-            return fallback();
           } finally {
             try {
               if (timer !== null && typeof env?.clearTimeout === 'function') env.clearTimeout(timer);
@@ -1169,6 +1231,14 @@ window.__ModuleLoader__.load({
             try {
               if (onExternalAbort !== null && typeof signal?.removeEventListener === 'function') {
                 signal.removeEventListener('abort', onExternalAbort);
+              }
+            } catch {
+              // 同上。
+            }
+            try {
+              if (retryTimer !== null && typeof env?.clearTimeout === 'function') {
+                env.clearTimeout(retryTimer);
+                retryTimer = null;
               }
             } catch {
               // 同上。
@@ -1200,7 +1270,7 @@ window.__ModuleLoader__.load({
         list: () => ctx.sessions.list.getSnapshot(),
         onStatus: (handler) => ctx.remote.$on('api-session/status', handler),
         getBinding: (id) => ctx.sessions.binding(id),
-        resolve: (id, signal) => resolver.resolve(id, signal),
+        resolve: (id, signal, since) => resolver.resolve(id, signal, since),
         isFocused: typeof claims?.isFocused === 'function'
           ? claims.isFocused
           : () => (

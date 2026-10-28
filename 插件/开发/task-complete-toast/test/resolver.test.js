@@ -19,6 +19,15 @@ function turnEnd(reason) {
   return { type: 'event', event: { type: 'turn/end', data: { reason } } };
 }
 
+/** 构造一条带落盘时间的 `turn/end` 事件窗口项（ADR-016）。 */
+function turnEndAt(reason, time) {
+  return { type: 'event', event: { type: 'turn/end', data: { reason }, time } };
+}
+
+async function flushMicrotasks(times = 40) {
+  for (let index = 0; index < times; index += 1) await Promise.resolve();
+}
+
 /** 假时钟：只推进显式时间，不 sleep、不依赖真实时间。 */
 function createClock() {
   let time = 0;
@@ -352,4 +361,113 @@ test('R10 外部 signal 取消：未发起时不 fetch，在途时走 fallback �
   assert.deepEqual(resultOf(result), { outcome: 'completed', source: 'fallback' });
   assert.equal(fetchAborted, true, '外部取消必须 abort 在途 fetch');
   assert.equal(clock.pending(), 0, '外部取消后必须清掉预算计时器');
+});
+
+// ---------------------------------------------------------------------------
+// ADR-016：结果新鲜度（since = 本轮 running 起点）
+// ---------------------------------------------------------------------------
+
+test('R-12 陈旧 completed 后 40ms 出现 aborted/user → suppressed（binding）', async () => {
+  const entries = [turnEndAt({ kind: 'completed' }, 0)];
+  const { env, clock } = createEnv({
+    getBinding: () => ({ eventSource: { getSnapshot: () => ({ entries }) } }),
+  });
+  const resolver = createResolver(env, {});
+
+  let settled = false;
+  const pending = resolver.resolve('s-12', undefined, 1000).then((value) => {
+    settled = true;
+    return value;
+  });
+  await flushMicrotasks();
+  assert.equal(settled, false, '陈旧结果不得直接采用');
+
+  entries.push(turnEndAt({ kind: 'aborted', reason: { kind: 'user' } }, 1040));
+  clock.advance(40);
+  const result = await pending;
+
+  assert.deepEqual(resultOf(result), { outcome: 'suppressed', source: 'binding' });
+  assert.equal(clock.pending(), 0, '成功后必须清掉预算与重试计时器');
+});
+
+test('R-13 since 后始终无新鲜结果 → 预算耗尽 completed + fallback', async () => {
+  const { env, calls, clock } = createEnv({
+    getBinding: () => ({ eventSource: { getSnapshot: () => ({ entries: [turnEndAt({ kind: 'completed' }, 0)] }) } }),
+    fetch: respondJson({ outcome: 'completed', at: 0 }),
+  });
+  const resolver = createResolver(env, { resolveBudgetMs: 200 });
+
+  let settled = false;
+  const pending = resolver.resolve('s-13', undefined, 1000).then((value) => {
+    settled = true;
+    return value;
+  });
+
+  for (let round = 0; round < 5; round += 1) {
+    await flushMicrotasks();
+    clock.advance(40);
+  }
+  const result = await pending;
+
+  assert.equal(settled, true);
+  assert.deepEqual(resultOf(result), { outcome: 'completed', source: 'fallback' });
+  assert.ok(calls.length >= 2, '预算内必须发生重试');
+  assert.equal(clock.pending(), 0, '预算耗尽后必须清掉全部计时器');
+});
+
+test('R-14 慢路径先陈旧 at、重试后新 at → 采用新结果且 source=route', async () => {
+  let calls = 0;
+  const { env, clock } = createEnv({
+    fetch: async () => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        calls += 1;
+        return calls === 1
+          ? { outcome: 'completed', at: 0 }
+          : { outcome: 'error', at: 2000 };
+      },
+    }),
+  });
+  const resolver = createResolver(env, { resolveBudgetMs: 200 });
+
+  const pending = resolver.resolve('s-14', undefined, 1000);
+  await flushMicrotasks();
+  clock.advance(40);
+  const result = await pending;
+
+  assert.deepEqual(resultOf(result), { outcome: 'error', source: 'route' });
+  assert.equal(calls, 2, '第一次陈旧、第二次新鲜');
+  assert.equal(clock.pending(), 0);
+});
+
+test('R-15 since - SKEW（100ms）边界 ±1ms 判定', async () => {
+  const since = 1000;
+
+  // 恰好 since - SKEW：快路径接受。
+  const fresh = createEnv({
+    getBinding: () => ({ eventSource: { getSnapshot: () => ({ entries: [turnEndAt({ kind: 'completed' }, 900)] }) } }),
+  });
+  assert.deepEqual(
+    resultOf(await createResolver(fresh.env, {}).resolve('s-15a', undefined, since)),
+    { outcome: 'completed', source: 'binding' },
+  );
+  assert.equal(fresh.clock.pending(), 0);
+
+  // 差 1ms：快路径拒绝，慢路径恰好 fresh → route。
+  const staleBinding = createEnv({
+    getBinding: () => ({ eventSource: { getSnapshot: () => ({ entries: [turnEndAt({ kind: 'completed' }, 899)] }) } }),
+    fetch: respondJson({ outcome: 'error', at: 900 }),
+  });
+  assert.deepEqual(
+    resultOf(await createResolver(staleBinding.env, {}).resolve('s-15b', undefined, since)),
+    { outcome: 'error', source: 'route' },
+  );
+
+  // 慢路径也差 1ms → 预算 0 立即 fallback。
+  const staleRoute = createEnv({ fetch: respondJson({ outcome: 'completed', at: 899 }) });
+  assert.deepEqual(
+    resultOf(await createResolver(staleRoute.env, { resolveBudgetMs: 0 }).resolve('s-15c', undefined, since)),
+    { outcome: 'completed', source: 'fallback' },
+  );
 });

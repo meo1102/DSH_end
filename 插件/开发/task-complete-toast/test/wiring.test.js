@@ -82,7 +82,7 @@ function readyList(ids) {
 }
 
 function turnEnd(reason) {
-  return { type: 'event', event: { type: 'turn/end', data: { reason } } };
+  return { type: 'event', event: { type: 'turn/end', data: { reason }, time: Date.now() } };
 }
 
 /** 注入行：默认关闭 minRunMs/cooldownMs，避免测试依赖真实墙钟。 */
@@ -243,7 +243,7 @@ test('W03 status(false) 在 settling 起点触发一次真实 resolver 请求', 
     fetch: async () => ({
       ok: true,
       status: 200,
-      json: async () => ({ sessionId: 's-3', outcome: 'error' }),
+      json: async () => ({ sessionId: 's-3', outcome: 'error', at: Date.now() }),
     }),
   });
 
