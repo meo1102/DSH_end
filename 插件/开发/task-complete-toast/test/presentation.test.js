@@ -296,8 +296,47 @@ test('P01 隐藏时入队：notifier 被调用，正文与浮层第二行逐字�
   assert.equal(FakeNotification.instances.length, 1, '隐藏时应在入队后触发通知，不依赖渲染');
   const notification = FakeNotification.instances[0];
   assert.equal(notification.options.body, line, '通知正文必须与浮层第二行一致');
+  assert.ok(notification.options.body.length > 0, '正文不得为空：入队时已固化文案，不依赖 texts');
   assert.equal(notification.title, titleOfCard(card), '标题也必须同源');
   assert.equal(notification.options.tag, `dsh-task-${hash16(harness.store.get()[0].key)}`);
+});
+
+test('R1-1 渲染不产生通知：onRendered 兜底已移除', () => {
+  FakeNotification.reset('granted');
+  const harness = createApplyHarness({ document: createDocument({ visible: false, focused: false }) });
+  const clock = createClock();
+  let onStatus = null;
+  const store = createStore({
+    now: clock.now,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    list: readyList(['s-r1']),
+    onStatus(handler) {
+      onStatus = handler;
+      return () => {};
+    },
+  }, { minRunMs: 0, cooldownMs: 0 });
+  store.start();
+
+  // 不注入 onEnqueued：条目只能靠渲染兜底发通知（若兜底还在）。
+  onStatus('s-r1', true);
+  clock.advance(1000);
+  onStatus('s-r1', false);
+  clock.advance(250);
+  assert.equal(store.get().length, 1, '条目应已入队');
+
+  const registration = harness.registrations[0];
+  assert.ok(registration, '应已注册 overlay');
+  const element = registration.component({
+    store,
+    config: { ...harness.config, systemNotification: 'always' },
+    t: (key) => key,
+    texts: new Map(),
+  });
+  const before = FakeNotification.instances.length;
+  renderSlotElement(element);
+
+  assert.equal(FakeNotification.instances.length, before, '渲染不得调用 notifier.notify');
 });
 
 test('P02 可见时入队：不发送系统通知', async () => {

@@ -1570,7 +1570,6 @@ window.__ModuleLoader__.load({
       const config = { ...DEFAULTS, ...(props.config ?? {}) };
       const t = typeof props.t === 'function' ? props.t : (key) => key;
       const texts = props.texts;
-      const onRendered = props.onRendered;
       const openSession = props.openSession;
       const useWorkspaces = typeof props.useWorkspaces === 'function' ? props.useWorkspaces : () => null;
       const useSessions = typeof props.useSessions === 'function' ? props.useSessions : () => null;
@@ -1612,7 +1611,7 @@ window.__ModuleLoader__.load({
         const names = resolveNames(workspaces, sessions, item.sessionId);
         const title = titleOf(t, item.outcome);
         const line = formatLine(t, names.workspace, names.session, t('statusIdle'));
-        // 文案共享表：key → {title, line}；入队通知已带同源文案，这里供渲染/补弹兜底。
+        // 文案缓存：key → {title, line}；只供渲染与延迟补弹读取，不触发通知。
         if (texts !== undefined && typeof texts?.set === 'function') texts.set(item.key, { title, line });
         return h(ToastErrorBoundary, { key: item.key },
           h(ToastCard, {
@@ -1635,9 +1634,6 @@ window.__ModuleLoader__.load({
           if (!liveKeys.has(key)) texts.delete(key);
         }
       }
-
-      // 渲染后文案已就绪，交给 apply 触发一次通知（按 key 去重）。
-      if (typeof onRendered === 'function') onRendered(items);
 
       return h(React.Fragment, null,
         h('style', null, TOAST_CSS),
@@ -2003,7 +1999,7 @@ window.__ModuleLoader__.load({
           };
         }
 
-        /** 入队即通知；同一 key 只发一次，渲染后不得重复。 */
+        /** 入队即通知；同一 key 只发一次。这是唯一的通知入口。 */
         function notifyEnqueuedNow(item) {
           if (item === null || typeof item !== 'object') return;
           if (handled.has(item.key)) return;
@@ -2011,7 +2007,8 @@ window.__ModuleLoader__.load({
           try {
             text = textFor(item);
           } catch {
-            text = { title: titleOf(t, item.outcome), line: '' };
+            // 解析失败也必须发出非空正文，不能退化成空通知。
+            text = { title: titleOf(t, item.outcome), line: formatLine(t, undefined, undefined, t('statusIdle')) };
           }
           handled.add(item.key);
           void notifier.notify({ ...item, title: text.title, line: text.line });
@@ -2019,26 +2016,6 @@ window.__ModuleLoader__.load({
         notifyEnqueued = notifyEnqueuedNow;
 
         ctx.effect(() => store.start());
-
-        /** 渲染后兜底：正常路径已在入队时通知；这里只处理漏网条目并按 key 去重。 */
-        function notifyItems(items) {
-          for (const item of items) {
-            if (handled.has(item.key)) continue;
-            let text;
-            try {
-              text = textFor(item);
-            } catch {
-              text = { title: titleOf(t, item.outcome), line: '' };
-            }
-            handled.add(item.key);
-            void notifier.notify({ ...item, title: text.title, line: text.line });
-          }
-          // 已离开队列的 key 不再需要去重记录，避免长会话累积。
-          const liveKeys = new Set(items.map((item) => item.key));
-          for (const key of handled) {
-            if (!liveKeys.has(key)) handled.delete(key);
-          }
-        }
 
         // 无渲染时（遮挡）也要清掉离开队列的 key，避免 handled 长期累积。
         const stopPrune = store.subscribe((items) => {
@@ -2063,7 +2040,6 @@ window.__ModuleLoader__.load({
             t: props.t ?? t,
             locale: props.locale ?? localeFace,
             texts: props.texts ?? texts,
-            onRendered: props.onRendered ?? notifyItems,
             onSnapshots: props.onSnapshots ?? ((workspaces, sessions) => {
               workspaceSnapshot = workspaces;
               sessionsSnapshot = sessions;
