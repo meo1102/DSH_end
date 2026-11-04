@@ -892,3 +892,24 @@ test('R1b-D1-6 后台通知标题不倒退：error 仍是任务失败', async ()
   assert.equal(FakeNotification.instances.length, 1);
   assert.equal(FakeNotification.instances[0].title, '任务失败', '后台快路径不得把 error 降级成 completed');
 });
+
+test('P14 G3 外观：四角/主题/尺寸写入容器，非法值回落默认', () => {
+  const custom = createApplyHarness({
+    injection: { position: 'top-left', theme: 'dark', size: 'compact' },
+  });
+  const customTree = custom.render();
+  const customStyle = customTree.props.children[0];
+  const customContainer = customTree.props.children[1];
+  assert.equal(customContainer.props['data-position'], 'top-left');
+  assert.equal(customContainer.props['data-theme'], 'dark');
+  assert.equal(customContainer.props['data-size'], 'compact');
+  assert.match(customStyle.props.children[0], /data-theme="dark"/);
+
+  const fallback = createApplyHarness({
+    injection: { position: 'top', theme: 'neon', size: 'huge' },
+  });
+  const fallbackContainer = fallback.render().props.children[1];
+  assert.equal(fallbackContainer.props['data-position'], 'bottom-right');
+  assert.equal(fallbackContainer.props['data-theme'], 'system');
+  assert.equal(fallbackContainer.props['data-size'], 'standard');
+});

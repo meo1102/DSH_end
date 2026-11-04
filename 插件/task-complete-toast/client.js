@@ -56,11 +56,18 @@ window.__ModuleLoader__.load({
       format: '{workspace}[{session}] · {status}',
     });
 
+    /** 外观枚举（G3）；渲染与配置守卫共用同一组值。 */
+    const POSITION_VALUES = Object.freeze(['top-left', 'top-right', 'bottom-left', 'bottom-right']);
+    const THEME_VALUES = Object.freeze(['system', 'light', 'dark']);
+    const SIZE_VALUES = Object.freeze(['compact', 'standard']);
+
     /** 客户端配置兜底（§7.2）；WP6a 用注入值按字段类型覆盖。 */
     const DEFAULTS = Object.freeze({
       enabled: true,
       routePath: '/dsh-task-complete/outcome',
       position: 'bottom-right',
+      theme: 'system',
+      size: 'standard',
       maxVisible: 3,
       durationMs: 5000,
       minRunMs: 1500,
@@ -79,9 +86,11 @@ window.__ModuleLoader__.load({
     const CONFIG_GUARDS = Object.freeze({
       enabled: (value) => typeof value === 'boolean',
       routePath: (value) => typeof value === 'string' && value.startsWith('/'),
-      position: (value) => value === 'bottom-right' || value === 'bottom-left',
+      position: (value) => POSITION_VALUES.includes(value),
+      theme: (value) => THEME_VALUES.includes(value),
+      size: (value) => SIZE_VALUES.includes(value),
       maxVisible: (value) => isFiniteNumber(value),
-      durationMs: (value) => isFiniteNumber(value),
+      durationMs: (value) => isFiniteNumber(value) && value >= 2000 && value <= 15000,
       minRunMs: (value) => isFiniteNumber(value),
       coalesceMs: (value) => isFiniteNumber(value),
       cooldownMs: (value) => isFiniteNumber(value),
@@ -1508,18 +1517,19 @@ window.__ModuleLoader__.load({
       };
     }
 
-    /** 视觉规格（§6.5 / §5.3）：只用 --dsw-alias-* token，卸载时随元素移除。 */
+    /** 视觉规格（§6.5 / §5.3）：默认只用 --dsw-alias-* token；G3 的 light/dark 用同源 static token。 */
     const TOAST_CSS = `
 .dtt-container {
   position: fixed;
-  bottom: 24px;
   display: flex;
   flex-direction: column;
   gap: 8px;
   pointer-events: none;
 }
-.dtt-container[data-position="bottom-right"] { right: 24px; }
-.dtt-container[data-position="bottom-left"] { left: 24px; }
+.dtt-container[data-position^="bottom"] { bottom: 24px; }
+.dtt-container[data-position^="top"] { top: 24px; }
+.dtt-container[data-position$="right"] { right: 24px; }
+.dtt-container[data-position$="left"] { left: 24px; }
 .dtt-card {
   position: relative;
   box-sizing: border-box;
@@ -1536,6 +1546,12 @@ window.__ModuleLoader__.load({
   pointer-events: auto;
   animation: dtt-in 160ms ease-out;
 }
+.dtt-container[data-size="compact"] .dtt-card {
+  width: 300px;
+  padding: 10px 12px;
+}
+.dtt-container[data-size="compact"] .dtt-title { font-size: 12px; }
+.dtt-container[data-size="compact"] .dtt-line { font-size: 11px; }
 .dtt-body { flex: 1; min-width: 0; }
 .dtt-icon {
   flex: 0 0 20px;
@@ -1576,6 +1592,24 @@ window.__ModuleLoader__.load({
   font-weight: 400;
   color: var(--dsw-alias-label-secondary);
 }
+/* G3：显式 light/dark 只影响弹窗自身；使用 DSH static token，不写死颜色。 */
+.dtt-container[data-theme="light"] .dtt-card {
+  color-scheme: light;
+  background: var(--dsw-static-neutral-bluish-00);
+  border-color: var(--dsw-static-neutral-bluish-150);
+}
+.dtt-container[data-theme="light"] .dtt-title { color: var(--dsw-static-neutral-bluish-1000); }
+.dtt-container[data-theme="light"] .dtt-line { color: var(--dsw-static-neutral-bluish-700); }
+.dtt-container[data-theme="light"] .dtt-close { color: var(--dsw-static-neutral-bluish-700); }
+.dtt-container[data-theme="dark"] .dtt-card {
+  color-scheme: dark;
+  background: var(--dsw-static-neutral-bluish-700);
+  border-color: var(--dsw-static-neutral-bluish-750);
+}
+.dtt-container[data-theme="dark"] .dtt-title { color: var(--dsw-static-neutral-bluish-50); }
+.dtt-container[data-theme="dark"] .dtt-line { color: var(--dsw-static-neutral-bluish-300); }
+.dtt-container[data-theme="dark"] .dtt-close { color: var(--dsw-static-neutral-bluish-300); }
+.dtt-container[data-theme="dark"] .dtt-icon-glyph { color: var(--dsw-static-neutral-bluish-00); }
 .dtt-card[data-tone="success"] .dtt-line { color: var(--dsw-alias-state-success-primary); }
 .dtt-card[data-tone="error"] .dtt-line { color: var(--dsw-alias-state-error-primary); }
 .dtt-card[data-tone="attention"] { border-color: var(--dsw-alias-state-warn-primary); }
@@ -1949,11 +1983,17 @@ window.__ModuleLoader__.load({
         }
       }
 
+      const position = POSITION_VALUES.includes(config.position) ? config.position : DEFAULTS.position;
+      const theme = THEME_VALUES.includes(config.theme) ? config.theme : DEFAULTS.theme;
+      const size = SIZE_VALUES.includes(config.size) ? config.size : DEFAULTS.size;
+
       return h(React.Fragment, null,
         h('style', null, TOAST_CSS),
         h('div', {
           className: 'dtt-container',
-          'data-position': config.position === 'bottom-left' ? 'bottom-left' : 'bottom-right',
+          'data-position': position,
+          'data-theme': theme,
+          'data-size': size,
           role: 'status',
           'aria-live': 'polite',
           'aria-atomic': 'false',

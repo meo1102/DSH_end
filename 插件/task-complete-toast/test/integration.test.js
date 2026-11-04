@@ -136,7 +136,7 @@ test('I05 aborted 的 5 种 cause 与 forked 映射正确', () => {
   assert.equal(forked.cancelCause, null);
 });
 
-test('I06 index-inject 默认投影只有 enabled/bridge/routePath', () => {
+test('I06 index-inject 默认投影：基础三项 + G3 外观五项', () => {
   const host = setupHost();
   const rows = [];
   host.emit('webserver/index-inject', rows);
@@ -149,9 +149,17 @@ test('I06 index-inject 默认投影只有 enabled/bridge/routePath', () => {
       enabled: true,
       bridge: 'auto',
       routePath: DEFAULT_ROUTE_PATH,
+      position: 'bottom-right',
+      theme: 'system',
+      size: 'standard',
+      durationMs: 5000,
+      showTitle: true,
     },
   });
-  assert.deepEqual(Object.keys(rows[0].value).sort(), ['bridge', 'enabled', 'routePath']);
+  assert.deepEqual(
+    Object.keys(rows[0].value).sort(),
+    ['bridge', 'durationMs', 'enabled', 'position', 'routePath', 'showTitle', 'size', 'theme'],
+  );
 });
 
 test('I06b enabled:false 只注册注入行，bridge 投影为 off', () => {
@@ -166,9 +174,34 @@ test('I06b enabled:false 只注册注入行，bridge 投影为 off', () => {
     enabled: false,
     bridge: 'off',
     routePath: DEFAULT_ROUTE_PATH,
+    position: 'bottom-right',
+    theme: 'system',
+    size: 'standard',
+    durationMs: 5000,
+    showTitle: true,
   });
   assert.equal('ringSize' in rows[0].value, false);
   assert.equal('entryTtlMs' in rows[0].value, false);
+});
+
+test('I06c appearance 自定义值投影到客户端', () => {
+  const host = setupHost({
+    appearance: {
+      position: 'top-left',
+      theme: 'dark',
+      size: 'compact',
+      durationMs: 12000,
+      showTitle: false,
+    },
+  });
+  const rows = [];
+  host.emit('webserver/index-inject', rows);
+
+  assert.equal(rows[0].value.position, 'top-left');
+  assert.equal(rows[0].value.theme, 'dark');
+  assert.equal(rows[0].value.size, 'compact');
+  assert.equal(rows[0].value.durationMs, 12000);
+  assert.equal(rows[0].value.showTitle, false);
 });
 
 test('I07 TTL 过期后 GET → 404 且表项被清除', () => {
@@ -235,6 +268,12 @@ test('I10 Config：数值/路径越界被拒，边界值通过', () => {
     [{ bridge: { entryTtlMs: 3600001 } }, ['bridge', 'entryTtlMs']],
     [{ bridge: { routePath: '/short' } }, ['bridge', 'routePath']],
     [{ bridge: { routePath: `/${'a'.repeat(120)}` } }, ['bridge', 'routePath']],
+    [{ appearance: { position: 'top' } }, ['appearance', 'position']],
+    [{ appearance: { theme: 'auto' } }, ['appearance', 'theme']],
+    [{ appearance: { size: 'large' } }, ['appearance', 'size']],
+    [{ appearance: { durationMs: 1999 } }, ['appearance', 'durationMs']],
+    [{ appearance: { durationMs: 15001 } }, ['appearance', 'durationMs']],
+    [{ appearance: { durationMs: 5000.5 } }, ['appearance', 'durationMs']],
   ];
 
   for (const [value, expectedPath] of invalidCases) {
@@ -274,6 +313,12 @@ test('I11 Config：类型错误被拒（含 enum）', () => {
     [{ bridge: { ringSize: '256' } }, ['bridge', 'ringSize']],
     [{ bridge: { entryTtlMs: null } }, ['bridge', 'entryTtlMs']],
     [{ bridge: { exposeReason: 'true' } }, ['bridge', 'exposeReason']],
+    [{ appearance: 'auto' }, ['appearance']],
+    [{ appearance: { position: 1 } }, ['appearance', 'position']],
+    [{ appearance: { theme: 1 } }, ['appearance', 'theme']],
+    [{ appearance: { size: 1 } }, ['appearance', 'size']],
+    [{ appearance: { durationMs: '5000' } }, ['appearance', 'durationMs']],
+    [{ appearance: { showTitle: 'yes' } }, ['appearance', 'showTitle']],
   ];
 
   for (const [value, expectedPath] of invalidCases) {
@@ -299,7 +344,7 @@ test('I12 Config：未知键忽略且不进入归一化结果', () => {
   assert.equal(result.value.bridge.ringSize, 64);
   assert.equal('unknownRoot' in result.value, false);
   assert.equal('unknownBridge' in result.value.bridge, false);
-  assert.deepEqual(Object.keys(result.value).sort(), ['bridge', 'enabled']);
+  assert.deepEqual(Object.keys(result.value).sort(), ['appearance', 'bridge', 'enabled']);
 });
 
 test('I13 parsePatch 支持 config 缩进映射', () => {

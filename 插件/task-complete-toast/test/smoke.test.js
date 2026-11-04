@@ -155,10 +155,14 @@ test('S5 客户端：apply 不抛错，注册一项，组件为函数且可渲�
   assert.equal(container.props.role, 'status');
   assert.equal(container.props['aria-live'], 'polite');
   assert.equal(container.props['data-position'], 'bottom-right');
+  assert.equal(container.props['data-theme'], 'system');
+  assert.equal(container.props['data-size'], 'standard');
   assert.equal(style.type, 'style');
   assert.match(style.props.children[0], /--dsw-alias-bg-overlay/);
   assert.match(style.props.children[0], /prefers-reduced-motion/);
   assert.match(style.props.children[0], /box-shadow: 0 10px 30px rgba\(0, 0, 0, 0.18\)/);
+  assert.match(style.props.children[0], /data-theme="dark"/);
+  assert.match(style.props.children[0], /data-size="compact"/);
 
   const cards = container.props.children[0];
   assert.equal(cards.length, 1);

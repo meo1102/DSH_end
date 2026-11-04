@@ -21,6 +21,13 @@ export const CONFIG_DEFAULTS = Object.freeze({
     entryTtlMs: 600000,
     exposeReason: true,
   }),
+  appearance: Object.freeze({
+    position: 'bottom-right',
+    theme: 'system',
+    size: 'standard',
+    durationMs: 5000,
+    showTitle: true,
+  }),
 });
 
 function defaults() {
@@ -33,6 +40,13 @@ function defaults() {
       ringSize: 256,
       entryTtlMs: 600000,
       exposeReason: true,
+    },
+    appearance: {
+      position: 'bottom-right',
+      theme: 'system',
+      size: 'standard',
+      durationMs: 5000,
+      showTitle: true,
     },
   };
 }
@@ -108,20 +122,69 @@ export function validate(value) {
     else result.bridge.exposeReason = bridge.exposeReason;
   }
 
+  let appearance = value.appearance;
+  if (appearance === undefined) {
+    appearance = {};
+  } else if (appearance === null || typeof appearance !== 'object' || Array.isArray(appearance)) {
+    push(['appearance'], 'appearance must be an object');
+    appearance = {};
+  }
+
+  if (appearance.position !== undefined) {
+    if (!['top-left', 'top-right', 'bottom-left', 'bottom-right'].includes(appearance.position)) {
+      push(['appearance', 'position'], 'appearance.position must be one of four corners');
+    } else {
+      result.appearance.position = appearance.position;
+    }
+  }
+
+  if (appearance.theme !== undefined) {
+    if (!['system', 'light', 'dark'].includes(appearance.theme)) {
+      push(['appearance', 'theme'], 'appearance.theme must be "system", "light" or "dark"');
+    } else {
+      result.appearance.theme = appearance.theme;
+    }
+  }
+
+  if (appearance.size !== undefined) {
+    if (appearance.size !== 'compact' && appearance.size !== 'standard') {
+      push(['appearance', 'size'], 'appearance.size must be "compact" or "standard"');
+    } else {
+      result.appearance.size = appearance.size;
+    }
+  }
+
+  if (appearance.durationMs !== undefined) {
+    if (!Number.isInteger(appearance.durationMs) || appearance.durationMs < 2000 || appearance.durationMs > 15000) {
+      push(['appearance', 'durationMs'], 'appearance.durationMs must be an integer between 2000 and 15000');
+    } else {
+      result.appearance.durationMs = appearance.durationMs;
+    }
+  }
+
+  if (appearance.showTitle !== undefined) {
+    if (typeof appearance.showTitle !== 'boolean') push(['appearance', 'showTitle'], 'appearance.showTitle must be a boolean');
+    else result.appearance.showTitle = appearance.showTitle;
+  }
+
   return issues.length > 0 ? { issues } : { value: result };
 }
 
 /**
- * 注入行的客户端投影（ADR-009）：只给客户端需要的三项，
+ * 注入行的客户端投影（ADR-009）：客户端只读这些字段，
  * 不外泄 ringSize / entryTtlMs / routeKind / exposeReason。
  * @param {object} config 已归一化的宿主配置
- * @returns {{enabled: boolean, bridge: 'auto'|'off', routePath: string}}
  */
 export function buildClientConfig(config) {
   return {
     enabled: config.enabled,
     bridge: config.bridge.enabled ? 'auto' : 'off',
     routePath: config.bridge.routePath,
+    position: config.appearance.position,
+    theme: config.appearance.theme,
+    size: config.appearance.size,
+    durationMs: config.appearance.durationMs,
+    showTitle: config.appearance.showTitle,
   };
 }
 
@@ -186,6 +249,48 @@ export const Config = {
           type: 'boolean',
           default: true,
           description: '关时响应只含 sessionId / outcome / at',
+        },
+      },
+    },
+    appearance: {
+      type: 'object',
+      default: {
+        position: 'bottom-right',
+        theme: 'system',
+        size: 'standard',
+        durationMs: 5000,
+        showTitle: true,
+      },
+      properties: {
+        position: {
+          type: 'string',
+          enum: ['top-left', 'top-right', 'bottom-left', 'bottom-right'],
+          default: 'bottom-right',
+          description: '弹窗四角位置',
+        },
+        theme: {
+          type: 'string',
+          enum: ['system', 'light', 'dark'],
+          default: 'system',
+          description: 'system 跟随主题；light/dark 使用作用域调色板',
+        },
+        size: {
+          type: 'string',
+          enum: ['compact', 'standard'],
+          default: 'standard',
+          description: '紧凑 / 标准',
+        },
+        durationMs: {
+          type: 'integer',
+          minimum: 2000,
+          maximum: 15000,
+          default: 5000,
+          description: '完成提示停留时长（毫秒）；常驻提醒不受影响',
+        },
+        showTitle: {
+          type: 'boolean',
+          default: true,
+          description: '是否显示标题行',
         },
       },
     },

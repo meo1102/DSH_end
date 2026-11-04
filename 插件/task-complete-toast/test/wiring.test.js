@@ -191,6 +191,8 @@ test('W01 注入配置覆盖 DEFAULTS（maxVisible:1 生效，坏类型被忽略
       maxVisible: 1,
       durationMs: '5000',
       position: 'top',
+      theme: 'neon',
+      size: 'huge',
       bridge: 'maybe',
       showTitle: false,
     },
@@ -200,6 +202,8 @@ test('W01 注入配置覆盖 DEFAULTS（maxVisible:1 生效，坏类型被忽略
   assert.equal(harness.config.maxVisible, 1, '合法字段应覆盖 DEFAULTS');
   assert.equal(harness.config.durationMs, 5000, '类型不符的 durationMs 应忽略');
   assert.equal(harness.config.position, 'bottom-right', '非法枚举应忽略');
+  assert.equal(harness.config.theme, 'system', '非法 theme 应忽略');
+  assert.equal(harness.config.size, 'standard', '非法 size 应忽略');
   assert.equal(harness.config.bridge, 'auto', '非法枚举应忽略');
   assert.equal(harness.config.showTitle, false, '其他合法客户端字段仍可覆盖');
 
@@ -449,4 +453,27 @@ test('W11 G2：未知 kind 与缺 key 的 pending 不提醒', () => {
   const harness = createApplyHarness({ sessionIds: ['s-11a', 's-11b', 's-11c'], uiSession });
 
   assert.equal(harness.toastProps.notices.get().length, 0, '形状不符不得猜');
+});
+
+test('W12 G3：合法外观字段覆盖 DEFAULTS，duration 越界被忽略', () => {
+  const harness = createApplyHarness({
+    injection: {
+      position: 'top-left',
+      theme: 'dark',
+      size: 'compact',
+      durationMs: 12000,
+      showTitle: false,
+    },
+  });
+
+  assert.equal(harness.config.position, 'top-left');
+  assert.equal(harness.config.theme, 'dark');
+  assert.equal(harness.config.size, 'compact');
+  assert.equal(harness.config.durationMs, 12000);
+  assert.equal(harness.config.showTitle, false);
+
+  const invalid = createApplyHarness({ injection: { durationMs: 1999 } });
+  assert.equal(invalid.config.durationMs, 5000, '低于 2000 ms 应回落默认');
+  const invalidHigh = createApplyHarness({ injection: { durationMs: 15001 } });
+  assert.equal(invalidHigh.config.durationMs, 5000, '高于 15000 ms 应回落默认');
 });
