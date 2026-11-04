@@ -32,7 +32,7 @@ const RUNTIME_FILES = [
 
 test('S1 清单：名称、版本、私有、ESM 与四个导出齐全', () => {
   assert.equal(manifest.name, '@local/task-complete-toast');
-  assert.equal(manifest.version, '1.1.0');
+  assert.equal(manifest.version, '1.2.0');
   assert.equal(manifest.private, true);
   assert.equal(manifest.type, 'module');
 
