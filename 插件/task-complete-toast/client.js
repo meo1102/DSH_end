@@ -291,6 +291,13 @@ window.__ModuleLoader__.load({
       return { key: pending.key, kind: pending.kind };
     }
 
+    /** 会话是否已进入主视图（DSH 用 retainedBy.mainView 表示）；只读计数值。 */
+    function sessionIsEntered(snapshot, sessionId) {
+      const row = snapshot?.byId?.[sessionId];
+      const mainView = row?.retainedBy?.mainView;
+      return typeof mainView === 'number' && mainView > 0;
+    }
+
     /**
      * ADR-013 消失计时器：start 起算完整 durationMs；enter 取消计时（held）；
      * leave 从零重新起算完整 durationMs，不保留剩余时间。
@@ -2427,6 +2434,26 @@ window.__ModuleLoader__.load({
         const noticeActive = new Set();
         const noticeClaimKey = (item) => `dsh-notice:${item.pendingKey}`;
 
+        function sessionListSnapshot() {
+          try {
+            return typeof ctx.sessions?.list?.getSnapshot === 'function'
+              ? ctx.sessions.list.getSnapshot()
+              : null;
+          } catch {
+            return null;
+          }
+        }
+
+        /** 进入会话（mainView > 0）即收起该会话的提醒与系统通知。 */
+        function dismissEnteredNotices() {
+          if (interactionStore === null) return;
+          const snapshot = sessionListSnapshot();
+          if (snapshot === null) return;
+          for (const item of interactionStore.get()) {
+            if (sessionIsEntered(snapshot, item.sessionId)) interactionStore.dismiss(item.key);
+          }
+        }
+
         /**
          * G2 系统通知去重：复用 G1 的 BroadcastChannel 认领租约，只让一个标签
          * 发系统通知；浮层仍由各标签各自渲染（本标签自己的 UI 不算重复）。
@@ -2455,10 +2482,16 @@ window.__ModuleLoader__.load({
           void notifier.notify({ ...item, title: text.title, line: text.line });
         }
 
-        const interactionStore = createInteractionStore({
+        let interactionStore = null;
+        interactionStore = createInteractionStore({
           source: config.awaiting === false ? undefined : uiSession?.sessionStatus,
           onAdded: (item) => {
             noticeActive.add(item.key);
+            // 已经进入该会话：不显示卡片、不发通知，直接收起（G2-1 修复）。
+            if (sessionIsEntered(sessionListSnapshot(), item.sessionId)) {
+              interactionStore?.dismiss(item.key);
+              return;
+            }
             void notifyNotice(item);
           },
           onRemoved: (item) => {
@@ -2474,6 +2507,18 @@ window.__ModuleLoader__.load({
           },
         }, config);
         ctx.effect(() => interactionStore.start());
+        dismissEnteredNotices();
+        const listFace = ctx.sessions?.list;
+        if (listFace !== null && typeof listFace === 'object' && typeof listFace.subscribe === 'function') {
+          ctx.effect(() => {
+            try {
+              return listFace.subscribe(dismissEnteredNotices);
+            } catch {
+              // 订阅失败只影响“进入会话自动收起”，不影响提醒本身。
+              return undefined;
+            }
+          });
+        }
         ctx.effect(() => ctx.on('connection/reset', () => interactionStore.reset()));
 
         ctx.effect(() => store.start());
@@ -2521,6 +2566,7 @@ window.__ModuleLoader__.load({
         createInteractionStore,
         pendingInteractionOf,
         noticeKindKeys,
+        sessionIsEntered,
         createResolver,
         classify,
         readClientConfig,

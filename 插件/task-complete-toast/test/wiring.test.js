@@ -492,3 +492,35 @@ test('W13 notify.awaiting:false → 不订阅 pendingInteraction、不产生提�
   assert.equal(harness.toastProps.notices.get().length, 0, '关闭后不得显示提醒');
   assert.equal(uiSession.listenerCount(), 0, '关闭后不得订阅 sessionStatus');
 });
+
+test('W14 进入会话（mainView>0）→ 收起 G2 提醒', () => {
+  const uiSession = createFakeUiSession(new Map([
+    ['s-14', { pendingInteraction: { key: 'approval:14', kind: 'approval' } }],
+  ]));
+  const harness = createApplyHarness({ sessionIds: ['s-14'], uiSession });
+  assert.equal(harness.toastProps.notices.get().length, 1, '未进入时应显示');
+
+  harness.setList({
+    phase: 'ready',
+    ids: ['s-14'],
+    byId: { 's-14': { id: 's-14', retainedBy: { mainView: 1 } } },
+  });
+  assert.equal(harness.toastProps.notices.get().length, 0, '进入会话后应收起');
+});
+
+test('W15 已在会话内出现 pending → 不显示提醒', () => {
+  const uiSession = createFakeUiSession(new Map([
+    ['s-15', { pendingInteraction: { key: 'question:15', kind: 'question' } }],
+  ]));
+  const harness = createApplyHarness({
+    list: {
+      phase: 'ready',
+      ids: ['s-15'],
+      byId: { 's-15': { id: 's-15', retainedBy: { mainView: 1 } } },
+    },
+    sessionIds: ['s-15'],
+    uiSession,
+  });
+
+  assert.equal(harness.toastProps.notices.get().length, 0, '已进入会话时不得遮挡');
+});

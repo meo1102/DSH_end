@@ -915,7 +915,7 @@ test('P14 G3 外观：四角/主题/尺寸写入容器，非法值回落默认',
   assert.equal(fallbackContainer.props['data-size'], 'standard');
 });
 
-test('P15 G2 提醒卡：常驻、attention 图标、标题/状态与名称同源', () => {
+test('P15 G2 提醒卡：attention 图标、标题/状态与名称同源（不做定时消失）', () => {
   const uiSession = createFakeUiSession(new Map([
     ['s-19', { running: true, pendingInteraction: { key: 'approval:19', kind: 'approval' } }],
   ]));

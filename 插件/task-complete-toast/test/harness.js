@@ -356,6 +356,7 @@ export function createFakeCtx(options = {}) {
   const remoteHandlers = new Map();
   const localeRegistrations = [];
   const localeListeners = new Set();
+  const listListeners = new Set();
   const sessionState = {
     list: options.list ?? { phase: 'ready', ids: [], byId: {} },
     binding: options.binding ?? (() => undefined),
@@ -450,6 +451,10 @@ export function createFakeCtx(options = {}) {
     sessions: {
       list: {
         getSnapshot: () => sessionState.list,
+        subscribe(listener) {
+          listListeners.add(listener);
+          return () => listListeners.delete(listener);
+        },
       },
       binding: (id) => sessionState.binding(id),
     },
@@ -474,6 +479,7 @@ export function createFakeCtx(options = {}) {
     },
     setList(next) {
       sessionState.list = next;
+      for (const listener of [...listListeners]) listener();
     },
     setBinding(next) {
       sessionState.binding = next;
