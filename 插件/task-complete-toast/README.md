@@ -10,7 +10,7 @@ DSH 持久化插件：当 Agent 从运行变为空闲时，在窗口右下角提
 | 版本 | `1.1.0`（发布基线）；工作树含 G2/G3，验证后升 `1.2.0` |
 | 目标环境 | DSH Desktop `0.2.1-rc.3`（Cordis），Windows |
 | 代码状态 | G1 已发布；G2/G3 代码完成、待真机； |
-| 自动化 | **156/156** 通过，`node --check` 17/17（2026-11-04 复核） |
+| 自动化 | **158/158** 通过，`node --check` 17/17（2026-11-04 复核） |
 | 真机验收 | 历史 **10 通过 / 1 部分 / 13 挂账**（未复验）；2026-11-04 已重新安装并加载，见 [`docs/取证/门禁-阶段0.md`](docs/取证/门禁-阶段0.md) |
 
 ## 功能
@@ -55,6 +55,7 @@ DSH 持久化插件：当 Agent 从运行变为空闲时，在窗口右下角提
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `enabled` | `true` | 总开关；关时客户端完全不启动 |
+| `notify.awaiting` | `true` | G2 授权/确认提醒开关；关时不订阅 `pendingInteraction` |
 | `bridge.enabled` | `true` | 关时客户端只走启发式（不拉结果） |
 | `bridge.routePath` | `/dsh-task-complete/outcome` | 结果路由 |
 | `bridge.routeKind` | `exact` | `exact` / `prefix` |
@@ -77,14 +78,14 @@ DSH 持久化插件：当 Agent 从运行变为空闲时，在窗口右下角提
 node --test --test-isolation=none test/smoke.test.js test/integration.test.js test/store.test.js test/format.test.js test/dismiss.test.js test/notifier.test.js test/resolver.test.js test/wiring.test.js test/presentation.test.js test/interaction.test.js
 ```
 
-期望 `tests 156 / pass 156 / fail 0`。在受限沙箱内**必须**用 `--test-isolation=none`（默认模式 spawn 子进程会 `spawn EPERM`）。
+期望 `tests 158 / pass 158 / fail 0`。在受限沙箱内**必须**用 `--test-isolation=none`（默认模式 spawn 子进程会 `spawn EPERM`）。
 
 ## 已知限制
 
 - 点击**系统通知**不会激活/置前窗口（Electron + Windows AUMID 限制）；应用内浮层点击可正常置前。
 - `Notification.permission` 在 Electron 恒为 `granted`，`denied → deferred` 分支仅由单测覆盖。
 - 状态行固定「待执行」（完成瞬间 Agent 空闲）；动态状态（执行中/等待回答）留待 v1.2。
-- **G2 已进入工作树但未发布**：需一次真实授权/提问触发验证；多标签会各显示一次提醒；暂无单功能开关。
+- **G2 已进入工作树但未发布**：需一次真实授权/提问触发验证；多标签会各显示一次提醒；可用 `notify.awaiting:false` 单独关闭。
 - **G3 已进入工作树但未发布**：需重启宿主（config 半区）+ 刷新页面；显式 light/dark 是作用域调色板，不改变全局主题。
 - 13 项真机验收未做（V05/V08/V09/V10/V14/V16/V18/V20/V22/V24/V25/V26/V27），逐项原因见验收报告；2026-11-04 重新安装后待复验。
 - 配置面板不支持（`Config` 为手写 Standard Schema，属已知限制）。

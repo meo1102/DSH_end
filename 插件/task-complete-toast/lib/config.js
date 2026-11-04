@@ -21,6 +21,9 @@ export const CONFIG_DEFAULTS = Object.freeze({
     entryTtlMs: 600000,
     exposeReason: true,
   }),
+  notify: Object.freeze({
+    awaiting: true,
+  }),
   appearance: Object.freeze({
     position: 'bottom-right',
     theme: 'system',
@@ -40,6 +43,9 @@ function defaults() {
       ringSize: 256,
       entryTtlMs: 600000,
       exposeReason: true,
+    },
+    notify: {
+      awaiting: true,
     },
     appearance: {
       position: 'bottom-right',
@@ -122,6 +128,19 @@ export function validate(value) {
     else result.bridge.exposeReason = bridge.exposeReason;
   }
 
+  let notify = value.notify;
+  if (notify === undefined) {
+    notify = {};
+  } else if (notify === null || typeof notify !== 'object' || Array.isArray(notify)) {
+    push(['notify'], 'notify must be an object');
+    notify = {};
+  }
+
+  if (notify.awaiting !== undefined) {
+    if (typeof notify.awaiting !== 'boolean') push(['notify', 'awaiting'], 'notify.awaiting must be a boolean');
+    else result.notify.awaiting = notify.awaiting;
+  }
+
   let appearance = value.appearance;
   if (appearance === undefined) {
     appearance = {};
@@ -180,6 +199,7 @@ export function buildClientConfig(config) {
     enabled: config.enabled,
     bridge: config.bridge.enabled ? 'auto' : 'off',
     routePath: config.bridge.routePath,
+    awaiting: config.notify.awaiting,
     position: config.appearance.position,
     theme: config.appearance.theme,
     size: config.appearance.size,
@@ -249,6 +269,19 @@ export const Config = {
           type: 'boolean',
           default: true,
           description: '关时响应只含 sessionId / outcome / at',
+        },
+      },
+    },
+    notify: {
+      type: 'object',
+      default: {
+        awaiting: true,
+      },
+      properties: {
+        awaiting: {
+          type: 'boolean',
+          default: true,
+          description: 'G2 授权/确认提醒开关；关时不订阅 pendingInteraction',
         },
       },
     },

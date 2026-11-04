@@ -23,7 +23,7 @@
 node --test --test-isolation=none test/smoke.test.js test/integration.test.js test/store.test.js test/format.test.js test/dismiss.test.js test/notifier.test.js test/resolver.test.js test/wiring.test.js test/presentation.test.js test/interaction.test.js
 ```
 
-期望 `tests 156 / pass 156 / fail 0`。受限沙箱内**必须** `--test-isolation=none`（默认模式 spawn EPERM）。
+期望 `tests 158 / pass 158 / fail 0`。受限沙箱内**必须** `--test-isolation=none`（默认模式 spawn EPERM）。
 
 ## 完成定义
 

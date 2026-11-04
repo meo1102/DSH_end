@@ -65,6 +65,7 @@ window.__ModuleLoader__.load({
     const DEFAULTS = Object.freeze({
       enabled: true,
       routePath: '/dsh-task-complete/outcome',
+      awaiting: true,
       position: 'bottom-right',
       theme: 'system',
       size: 'standard',
@@ -86,6 +87,7 @@ window.__ModuleLoader__.load({
     const CONFIG_GUARDS = Object.freeze({
       enabled: (value) => typeof value === 'boolean',
       routePath: (value) => typeof value === 'string' && value.startsWith('/'),
+      awaiting: (value) => typeof value === 'boolean',
       position: (value) => POSITION_VALUES.includes(value),
       theme: (value) => THEME_VALUES.includes(value),
       size: (value) => SIZE_VALUES.includes(value),
@@ -2423,7 +2425,7 @@ window.__ModuleLoader__.load({
         }
         const uiSession = readUiSession();
         const interactionStore = createInteractionStore({
-          source: uiSession?.sessionStatus,
+          source: config.awaiting === false ? undefined : uiSession?.sessionStatus,
           onAdded: (item) => {
             let text;
             try {

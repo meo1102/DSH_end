@@ -477,3 +477,18 @@ test('W12 G3：合法外观字段覆盖 DEFAULTS，duration 越界被忽略', ()
   const invalidHigh = createApplyHarness({ injection: { durationMs: 15001 } });
   assert.equal(invalidHigh.config.durationMs, 5000, '高于 15000 ms 应回落默认');
 });
+
+test('W13 notify.awaiting:false → 不订阅 pendingInteraction、不产生提醒', () => {
+  const uiSession = createFakeUiSession(new Map([
+    ['s-13', { pendingInteraction: { key: 'approval:13', kind: 'approval' } }],
+  ]));
+  const harness = createApplyHarness({
+    sessionIds: ['s-13'],
+    uiSession,
+    injection: { awaiting: false },
+  });
+
+  assert.equal(harness.config.awaiting, false);
+  assert.equal(harness.toastProps.notices.get().length, 0, '关闭后不得显示提醒');
+  assert.equal(uiSession.listenerCount(), 0, '关闭后不得订阅 sessionStatus');
+});
