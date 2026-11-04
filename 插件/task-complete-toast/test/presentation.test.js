@@ -932,6 +932,7 @@ test('P15 G2 提醒卡：attention 图标、标题/状态与名称同源（不�
   assert.equal(cards.length, 1, '无完成卡时只渲染一条提醒');
   const card = cards[0].props.children[0];
   assert.equal(card.props.sticky, true, 'G2 提醒不得自动消失');
+  assert.equal(card.props.durationMs, undefined, 'G2 提醒不接 durationMs，G3-4 后半由结构保证');
   assert.equal(card.props.tone, 'attention');
   assert.equal(card.props.title, '需要授权');
   assert.equal(card.props.line, '插件[Toast] · 等待审批');
