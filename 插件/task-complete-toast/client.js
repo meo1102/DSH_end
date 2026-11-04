@@ -1030,10 +1030,8 @@ window.__ModuleLoader__.load({
      * @param {object} [config]
      */
     function createInteractionStore(env, config) {
-      const settings = { ...DEFAULTS, ...(config ?? {}) };
-      const maxVisible = Number.isFinite(settings.maxVisible) && settings.maxVisible > 0
-        ? Math.min(settings.maxVisible, 5)
-        : 3;
+      // G2 独立上限：不随完成队列的 maxVisible 缩小，避免把授权提醒压没。
+      const maxVisible = 3;
       const now = typeof env?.now === 'function' ? () => env.now() : () => Date.now();
       const source = env?.source;
       const items = [];
