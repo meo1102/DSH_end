@@ -7,7 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createFakeCtx, loadClientModule, renderSlotElement, slotChildProps } from './harness.js';
+import { createFakeCtx, createFakeUiSession, loadClientModule, renderSlotElement, slotChildProps } from './harness.js';
 
 const { factory } = loadClientModule();
 const { createNotifier, createStore, hash16 } = factory.__test__;
@@ -187,6 +187,7 @@ function createApplyHarness(options = {}) {
   const fake = createFakeCtx({
     list: options.list ?? readyList(options.sessionIds ?? []),
     binding: options.binding ?? (() => undefined),
+    uiSession: options.uiSession,
     slotProps: options.slotProps,
   });
   clientFactory.apply(fake.ctx);
@@ -912,4 +913,31 @@ test('P14 G3 外观：四角/主题/尺寸写入容器，非法值回落默认',
   assert.equal(fallbackContainer.props['data-position'], 'bottom-right');
   assert.equal(fallbackContainer.props['data-theme'], 'system');
   assert.equal(fallbackContainer.props['data-size'], 'standard');
+});
+
+test('P15 G2 提醒卡：常驻、attention 图标、标题/状态与名称同源', () => {
+  const uiSession = createFakeUiSession(new Map([
+    ['s-19', { running: true, pendingInteraction: { key: 'approval:19', kind: 'approval' } }],
+  ]));
+  const harness = createApplyHarness({
+    sessionIds: ['s-19'],
+    uiSession,
+    slotProps: {
+      useWorkspaces: () => ({ byId: { w: { title: '插件', sessionIds: ['s-19'] } } }),
+      useSessions: () => ({ byId: { 's-19': { title: 'Toast' } } }),
+    },
+  });
+
+  const cards = cardsOf(harness.render());
+  assert.equal(cards.length, 1, '无完成卡时只渲染一条提醒');
+  const card = cards[0].props.children[0];
+  assert.equal(card.props.sticky, true, 'G2 提醒不得自动消失');
+  assert.equal(card.props.tone, 'attention');
+  assert.equal(card.props.title, '需要授权');
+  assert.equal(card.props.line, '插件[Toast] · 等待审批');
+
+  const cardTree = card.type(card.props);
+  assert.equal(cardTree.props['data-tone'], 'attention');
+  assert.equal(cardTree.props.children[0].props.className, 'dtt-icon dtt-icon-attention');
+  assert.equal(cardTree.props.children[0].props.children[0].props.children[0], '?');
 });

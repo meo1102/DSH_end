@@ -10,7 +10,7 @@ DSH 持久化插件：当 Agent 从运行变为空闲时，在窗口右下角提
 | 版本 | `1.1.0`（发布基线）；工作树含 G2/G3，验证后升 `1.2.0` |
 | 目标环境 | DSH Desktop `0.2.1-rc.3`（Cordis），Windows |
 | 代码状态 | G1 已发布；G2/G3 代码完成、待真机； |
-| 自动化 | **155/155** 通过，`node --check` 17/17（2026-11-04 复核） |
+| 自动化 | **156/156** 通过，`node --check` 17/17（2026-11-04 复核） |
 | 真机验收 | 历史 **10 通过 / 1 部分 / 13 挂账**（未复验）；2026-11-04 已重新安装并加载，见 [`docs/取证/门禁-阶段0.md`](docs/取证/门禁-阶段0.md) |
 
 ## 功能
@@ -77,7 +77,7 @@ DSH 持久化插件：当 Agent 从运行变为空闲时，在窗口右下角提
 node --test --test-isolation=none test/smoke.test.js test/integration.test.js test/store.test.js test/format.test.js test/dismiss.test.js test/notifier.test.js test/resolver.test.js test/wiring.test.js test/presentation.test.js test/interaction.test.js
 ```
 
-期望 `tests 155 / pass 155 / fail 0`。在受限沙箱内**必须**用 `--test-isolation=none`（默认模式 spawn 子进程会 `spawn EPERM`）。
+期望 `tests 156 / pass 156 / fail 0`。在受限沙箱内**必须**用 `--test-isolation=none`（默认模式 spawn 子进程会 `spawn EPERM`）。
 
 ## 已知限制
 
