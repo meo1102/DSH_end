@@ -1,15 +1,17 @@
 # 任务完成提示（task-complete-toast）
 
+> **开发约束**：先读 [`docs/宪章.md`](docs/宪章.md)。它是项目总约束；当前 `1.1.0` 只交付 **G1（完成提示）**，**G2（授权/确认提醒）** 与 **G3（弹窗样式自定义）** 是 v1.2 目标，未实现。
+
 DSH 持久化插件：当 Agent 从运行变为空闲时，在窗口右下角提示任务完成；当页面不可见或被遮挡时，改发 Windows 系统通知。
 
 | 项 | 值 |
 |---|---|
 | 包名 | `@local/task-complete-toast` |
-| 版本 | `1.1.0` |
+| 版本 | `1.1.0`（G1 基线） |
 | 目标环境 | DSH Desktop `0.2.1-rc.3`（Cordis），Windows |
-| 代码状态 | 完成 |
-| 自动化 | **142/142** 通过，`node --check` 16/16 |
-| 真机验收 | **10 通过 / 1 部分 / 13 挂账未验**（见 [`docs/验收报告.md`](docs/验收报告.md)） |
+| 代码状态 | G1 完成；v1.2（G2/G3）未开始 |
+| 自动化 | **142/142** 通过，`node --check` 16/16（2026-11-04 复核） |
+| 真机验收 | 历史 **10 通过 / 1 部分 / 13 挂账**（未复验）；2026-11-04 已重新安装并加载，见 [`docs/取证/门禁-阶段0.md`](docs/取证/门禁-阶段0.md) |
 
 ## 功能
 
@@ -42,6 +44,8 @@ DSH 持久化插件：当 Agent 从运行变为空闲时，在窗口右下角提
 
 生效规则：客户端改动刷新页面即生效；宿主改动与替换包需**重启应用**。
 
+**2026-11-04 接管复核**：目录搬动后 junction 仍指向旧路径、bundle 列表也缺条目，插件曾静默消失。本次用 `plugin_manager` `remove_bundle` + `install_bundle` 重新安装：junction 已指向本目录，`include:task-complete-toast` 为 `active`，客户端 `shell.overlay` 有 `task-complete-toast`（order 100），`GET /dsh-task-complete/outcome` 返回预期的 400/404。证据见 [`docs/取证/门禁-阶段0.md`](docs/取证/门禁-阶段0.md)。
+
 ## 配置
 
 宿主 `Config`（写入 `cordis.patch.yml` 对应 entry 的 `config`）：
@@ -56,7 +60,7 @@ DSH 持久化插件：当 Agent 从运行变为空闲时，在窗口右下角提
 | `bridge.entryTtlMs` | `600000` | 结果表 TTL |
 | `bridge.exposeReason` | `true` | 关时响应只含 `sessionId/outcome/at` |
 
-客户端侧（`position`、`maxVisible`、`durationMs`、`minRunMs`、`coalesceMs`、`cooldownMs`、`showTitle`、`systemNotification`、`suppressWhenFocused`、`maxPerMinute`、`resolveBudgetMs`、`claimWindowMs`）为内置默认值，v1.1 不支持经 patch 调整。
+客户端侧（`position`、`maxVisible`、`durationMs`、`minRunMs`、`coalesceMs`、`cooldownMs`、`showTitle`、`systemNotification`、`suppressWhenFocused`、`maxPerMinute`、`resolveBudgetMs`、`claimWindowMs`）为内置默认值，v1.1 不支持经 patch 调整。**G3（弹窗样式自定义）尚未实现**；届时新增的外观配置必须走宿主 `Config` 投影，仍保持纯 token、无任意 CSS。
 
 ## 测试
 
@@ -72,14 +76,16 @@ node --test --test-isolation=none test/smoke.test.js test/integration.test.js te
 
 - 点击**系统通知**不会激活/置前窗口（Electron + Windows AUMID 限制）；应用内浮层点击可正常置前。
 - `Notification.permission` 在 Electron 恒为 `granted`，`denied → deferred` 分支仅由单测覆盖。
-- 状态行固定「待执行」（完成瞬间 Agent 空闲）；动态状态（执行中/等待回答）留待后续版本。
-- 13 项真机验收未做（V05/V08/V09/V10/V14/V16/V18/V20/V22/V24/V25/V26/V27），逐项原因见验收报告。
+- 状态行固定「待执行」（完成瞬间 Agent 空闲）；动态状态（执行中/等待回答）留待 v1.2。
+- **G2 授权/确认提醒、G3 弹窗样式自定义未实现**（见宪章；G2 需先取证真实宿主信号）。
+- 13 项真机验收未做（V05/V08/V09/V10/V14/V16/V18/V20/V22/V24/V25/V26/V27），逐项原因见验收报告；2026-11-04 重新安装后待复验。
 - 配置面板不支持（`Config` 为手写 Standard Schema，属已知限制）。
 
 ## 目录
 
 ```text
 task-complete-toast/
+├─ AGENTS.md            # 本目录开发约定（先读宪章）
 ├─ package.json  cordis.patch.yml
 ├─ index.js            # 宿主：Config、结果表、路由、配置注入
 ├─ client.js           # 客户端：store、渲染、通知、结果桥
@@ -87,8 +93,12 @@ task-complete-toast/
 ├─ locale/  icon.svg
 ├─ test/               # 10 个测试文件
 └─ docs/
+   ├─ 宪章.md           # 项目总约束（先读）
    ├─ 设计.md
    ├─ 决策记录.md
    ├─ 验收报告.md
-   └─ 交接说明.md
+   ├─ 交接说明.md
+   └─ 取证/
+      ├─ 台账.md
+      └─ 门禁-阶段0.md
 ```
