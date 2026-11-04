@@ -85,7 +85,7 @@ node --test --test-isolation=none test/smoke.test.js test/integration.test.js te
 - 点击**系统通知**不会激活/置前窗口（Electron + Windows AUMID 限制）；应用内浮层点击可正常置前。
 - `Notification.permission` 在 Electron 恒为 `granted`，`denied → deferred` 分支仅由单测覆盖。
 - 状态行固定「待执行」（完成瞬间 Agent 空闲）；动态状态（执行中/等待回答）留待 v1.2。
-- **G2 已进入工作树但未发布**：需一次真实授权/提问触发验证；多标签会各显示一次提醒；可用 `notify.awaiting:false` 单独关闭。
+- **G2 已进入工作树但未发布**：需一次真实授权/提问触发验证；多标签浮层各显示一次、系统通知已认领单发；可用 `notify.awaiting:false` 单独关闭。
 - **G3 已进入工作树但未发布**：需重启宿主（config 半区）+ 刷新页面；显式 light/dark 是作用域调色板，不改变全局主题。
 - 13 项真机验收未做（V05/V08/V09/V10/V14/V16/V18/V20/V22/V24/V25/V26/V27），逐项原因见验收报告；2026-11-04 重新安装后待复验。
 - 配置面板不支持（`Config` 为手写 Standard Schema，属已知限制）。

@@ -2424,22 +2424,54 @@ window.__ModuleLoader__.load({
           }
         }
         const uiSession = readUiSession();
+        const noticeActive = new Set();
+        const noticeClaimKey = (item) => `dsh-notice:${item.pendingKey}`;
+
+        /**
+         * G2 系统通知去重：复用 G1 的 BroadcastChannel 认领租约，只让一个标签
+         * 发系统通知；浮层仍由各标签各自渲染（本标签自己的 UI 不算重复）。
+         * 认领失败/基础设施异常一律 fail-open，宁可多一条通知，不可静默丢失。
+         */
+        async function notifyNotice(item) {
+          let won = true;
+          if (typeof lease.claim === 'function') {
+            try {
+              won = (await lease.claim(noticeClaimKey(item))) !== false;
+            } catch {
+              won = true;
+            }
+          }
+          if (!won || !noticeActive.has(item.key)) return;
+          let text;
+          try {
+            text = noticeTextFor(item);
+          } catch {
+            const keys = noticeKindKeys(item.kind);
+            text = {
+              title: t(keys.title),
+              line: formatLine(t, undefined, undefined, t(keys.status)),
+            };
+          }
+          void notifier.notify({ ...item, title: text.title, line: text.line });
+        }
+
         const interactionStore = createInteractionStore({
           source: config.awaiting === false ? undefined : uiSession?.sessionStatus,
           onAdded: (item) => {
-            let text;
-            try {
-              text = noticeTextFor(item);
-            } catch {
-              const keys = noticeKindKeys(item.kind);
-              text = {
-                title: t(keys.title),
-                line: formatLine(t, undefined, undefined, t(keys.status)),
-              };
-            }
-            void notifier.notify({ ...item, title: text.title, line: text.line });
+            noticeActive.add(item.key);
+            void notifyNotice(item);
           },
-          onRemoved: (item) => notifier.close(item.key),
+          onRemoved: (item) => {
+            noticeActive.delete(item.key);
+            if (typeof lease.cancel === 'function') {
+              try {
+                lease.cancel(noticeClaimKey(item));
+              } catch {
+                // 取消失败不影响提醒移除。
+              }
+            }
+            notifier.close(item.key);
+          },
         }, config);
         ctx.effect(() => interactionStore.start());
         ctx.effect(() => ctx.on('connection/reset', () => interactionStore.reset()));
