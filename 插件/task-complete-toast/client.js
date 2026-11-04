@@ -19,10 +19,14 @@ window.__ModuleLoader__.load({
       titleStopped: '任务已停止',
       titleInterrupted: '任务已中断',
       titleBlocked: '任务被阻止',
+      titleAwaitingApproval: '需要授权',
+      titleAwaitingAnswer: '需要回答',
+      titleAwaitingConfirmation: '需要确认',
       statusIdle: '待执行',
       statusRunning: '执行中',
       statusAwaitingAnswer: '等待回答',
       statusAwaitingApproval: '等待审批',
+      statusAwaitingConfirmation: '等待确认',
       fallbackWorkspace: '未分组',
       fallbackSession: '未命名会话',
       actionView: '查看',
@@ -37,10 +41,14 @@ window.__ModuleLoader__.load({
       titleStopped: 'Task stopped',
       titleInterrupted: 'Task interrupted',
       titleBlocked: 'Task blocked',
+      titleAwaitingApproval: 'Approval needed',
+      titleAwaitingAnswer: 'Answer needed',
+      titleAwaitingConfirmation: 'Confirmation needed',
       statusIdle: 'Idle',
       statusRunning: 'Running',
       statusAwaitingAnswer: 'Awaiting answer',
       statusAwaitingApproval: 'Awaiting approval',
+      statusAwaitingConfirmation: 'Awaiting confirmation',
       fallbackWorkspace: 'Ungrouped',
       fallbackSession: 'Untitled session',
       actionView: 'View',
@@ -238,6 +246,38 @@ window.__ModuleLoader__.load({
     function titleOf(t, outcome) {
       const translate = typeof t === 'function' ? t : (key) => key;
       return translate(TITLE_KEYS[outcome] ?? 'titleCompleted');
+    }
+
+    /**
+     * G2：`uiSession.sessionStatus` 的 pendingInteraction.kind → 文案键。
+     * 只接受已知 kind；未知/缺 key 一律跳过，不猜。
+     */
+    const NOTICE_KIND_KEYS = Object.freeze({
+      approval: Object.freeze({ title: 'titleAwaitingApproval', status: 'statusAwaitingApproval' }),
+      question: Object.freeze({ title: 'titleAwaitingAnswer', status: 'statusAwaitingAnswer' }),
+      'plan-review': Object.freeze({ title: 'titleAwaitingAnswer', status: 'statusAwaitingAnswer' }),
+    });
+
+    const DEFAULT_NOTICE_KIND = Object.freeze({
+      title: 'titleAwaitingConfirmation',
+      status: 'statusAwaitingConfirmation',
+    });
+
+    function noticeKindKeys(kind) {
+      return NOTICE_KIND_KEYS[kind] ?? DEFAULT_NOTICE_KIND;
+    }
+
+    /** 从一条 SessionStatus 里取可安全通知的 pending 摘要；不读取任何内容字段。 */
+    function pendingInteractionOf(status) {
+      const pending = status?.pendingInteraction;
+      if (pending === null || typeof pending !== 'object') return undefined;
+      if (typeof pending.key !== 'string' || pending.key.length === 0) return undefined;
+      if (typeof pending.kind !== 'string' || pending.kind.length === 0) return undefined;
+      // 只读回看卡（已完成问题的 review）不是“正在等待”，不入队；只查存在性，不读内容。
+      if (pending.review !== undefined) return undefined;
+      // 只认识 approval / question / plan-review；其他 kind 留待后续版本，不在本版猜。
+      if (!Object.prototype.hasOwnProperty.call(NOTICE_KIND_KEYS, pending.kind)) return undefined;
+      return { key: pending.key, kind: pending.kind };
     }
 
     /**
@@ -966,6 +1006,171 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * G2 的独立通知队列：观察 `uiSession.sessionStatus`，把每个
+     * `pendingInteraction` 变成一个**常驻**提醒。它与完成队列分开，避免
+     * 授权提醒被完成提示的限流/自动消失语义吞掉。
+     *
+     * - 只读 `pendingInteraction.key / kind` 与 SessionStatus 的 key；不读内容。
+     * - 同一 pending key 只提醒一次；用户手动关闭后，本轮等待内不再补弹。
+     * - pending 消失（解决/取消/会话移除）即自动移除。
+     * - 未提供 source 或形状不符时退化为空队列，不抛错。
+     *
+     * @param {{source?: {getSnapshot: Function, subscribe: Function},
+     *          onAdded?: (item: object) => void,
+     *          onRemoved?: (item: object) => void}} env
+     * @param {object} [config]
+     */
+    function createInteractionStore(env, config) {
+      const settings = { ...DEFAULTS, ...(config ?? {}) };
+      const maxVisible = Number.isFinite(settings.maxVisible) && settings.maxVisible > 0
+        ? Math.min(settings.maxVisible, 5)
+        : 3;
+      const now = typeof env?.now === 'function' ? () => env.now() : () => Date.now();
+      const source = env?.source;
+      const items = [];
+      const listeners = new Set();
+      const active = new Map(); // pendingKey → item
+      const dismissed = new Set(); // pendingKey → 用户已关闭，等待本轮结束
+      let snapshot = Object.freeze([]);
+      let started = false;
+      let stopSource = null;
+
+      function publish() {
+        snapshot = Object.freeze(items.slice());
+        for (const listener of [...listeners]) {
+          try {
+            listener(snapshot);
+          } catch {
+            // 单个订阅者异常不影响队列与其他订阅者。
+          }
+        }
+      }
+
+      function call(handler, item) {
+        if (typeof handler !== 'function') return;
+        try {
+          handler(item);
+        } catch {
+          // 通知接线失败不得破坏 pending 跟踪。
+        }
+      }
+
+      function add(pendingKey, sessionId, kind) {
+        if (dismissed.has(pendingKey)) return;
+        if (active.has(pendingKey)) return;
+        const item = Object.freeze({
+          key: `notice:${pendingKey}`,
+          pendingKey,
+          sessionId,
+          kind,
+          notice: true,
+          at: now(),
+        });
+        active.set(pendingKey, item);
+        items.push(item);
+        while (items.length > maxVisible) items.shift();
+        publish();
+        call(env?.onAdded, item);
+      }
+
+      /** 移除一条；keepDismissed=true 时保留“本轮不再补弹”的抑制。 */
+      function remove(pendingKey, keepDismissed = false) {
+        if (!keepDismissed) dismissed.delete(pendingKey);
+        const item = active.get(pendingKey);
+        if (item === undefined) return;
+        active.delete(pendingKey);
+        const index = items.indexOf(item);
+        if (index >= 0) items.splice(index, 1);
+        publish();
+        call(env?.onRemoved, item);
+      }
+
+      function sync() {
+        if (source === null || typeof source !== 'object' || typeof source.getSnapshot !== 'function') return;
+        let value;
+        try {
+          value = source.getSnapshot();
+        } catch {
+          return;
+        }
+        // 跨 realm 的 Map 不保证 instanceof Map；用 forEach 鸭子类型判断。
+        if (value === null || typeof value !== 'object' || typeof value.forEach !== 'function') return;
+
+        const next = new Map();
+        value.forEach((status, sessionId) => {
+          if (typeof sessionId !== 'string' || sessionId.length === 0) return;
+          const pending = pendingInteractionOf(status);
+          if (pending === undefined) return;
+          next.set(pending.key, { sessionId, kind: pending.kind });
+        });
+
+        for (const pendingKey of [...active.keys()]) {
+          if (!next.has(pendingKey)) remove(pendingKey);
+        }
+        // 已 dismiss 的 pending 一旦从快照消失，本轮抑制结束；同 key 再来可重新提醒。
+        for (const pendingKey of [...dismissed]) {
+          if (!next.has(pendingKey)) dismissed.delete(pendingKey);
+        }
+        for (const [pendingKey, info] of next) {
+          if (!active.has(pendingKey)) add(pendingKey, info.sessionId, info.kind);
+        }
+      }
+
+      function start() {
+        if (started) return () => {};
+        started = true;
+        if (source !== null && typeof source === 'object' && typeof source.subscribe === 'function') {
+          try {
+            stopSource = source.subscribe(sync);
+          } catch {
+            stopSource = null;
+          }
+        }
+        sync();
+        return () => {
+          if (typeof stopSource === 'function') {
+            try {
+              stopSource();
+            } catch {
+              // 取消订阅失败不影响后续清理。
+            }
+          }
+          stopSource = null;
+          started = false;
+          reset();
+        };
+      }
+
+      function reset() {
+        for (const item of [...active.values()]) call(env?.onRemoved, item);
+        active.clear();
+        items.length = 0;
+        dismissed.clear();
+        publish();
+      }
+
+      return {
+        start,
+        subscribe(listener) {
+          if (typeof listener !== 'function') return () => {};
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+        get() {
+          return snapshot;
+        },
+        /** 用户关闭提醒；本轮 pending 结束前不再补弹。 */
+        dismiss(key) {
+          const item = items.find((entry) => entry.key === key);
+          if (item === undefined) return;
+          dismissed.add(item.pendingKey);
+          remove(item.pendingKey, true);
+        },
+        reset,
+      };
+    }
+
+    /**
      * `turn/end` 原因分类（§7.4 全 8 行）。
      *
      * 客户端不能 import 宿主 `lib/classify.js`（单文件客户端、无打包器），
@@ -1344,6 +1549,7 @@ window.__ModuleLoader__.load({
 }
 .dtt-icon-success { background: var(--dsw-alias-state-success-primary); }
 .dtt-icon-error { background: var(--dsw-alias-state-error-primary); }
+.dtt-icon-attention { background: var(--dsw-alias-state-warn-primary); }
 .dtt-icon-glyph {
   font-size: 13px;
   line-height: 1;
@@ -1372,6 +1578,8 @@ window.__ModuleLoader__.load({
 }
 .dtt-card[data-tone="success"] .dtt-line { color: var(--dsw-alias-state-success-primary); }
 .dtt-card[data-tone="error"] .dtt-line { color: var(--dsw-alias-state-error-primary); }
+.dtt-card[data-tone="attention"] { border-color: var(--dsw-alias-state-warn-primary); }
+.dtt-card[data-tone="attention"] .dtt-line { color: var(--dsw-alias-state-warn-primary); }
 .dtt-close {
   position: absolute;
   top: 8px;
@@ -1466,7 +1674,9 @@ window.__ModuleLoader__.load({
 
     /** 单张卡片：ADR-013 离场计时（移入取消、移出重新完整时长）、两行、图标、关闭、点击回跳。 */
     function ToastCard(props) {
-      const { item, title, line, t, showTitle, onDismiss, onOpen, timers, durationMs } = props;
+      const {
+        item, title, line, t, showTitle, onDismiss, onOpen, timers, durationMs, sticky = false, tone: toneProp,
+      } = props;
       const scheduleTimer = typeof timers?.setTimeout === 'function'
         ? (callback, ms) => timers.setTimeout(callback, ms)
         : (callback, ms) => (typeof setTimeout === 'function' ? setTimeout(callback, ms) : 0);
@@ -1517,7 +1727,8 @@ window.__ModuleLoader__.load({
       );
 
       React.useEffect(() => {
-        control.timer.start();
+        // 常驻提醒（G2）不自动消失；关闭按钮/点击/Esc 仍可关闭。
+        if (!sticky) control.timer.start();
 
         // 卡片出现时指针已在其区域（:hover）按移入处理，不计时（ADR-013）。
         const node = cardRef.current;
@@ -1550,17 +1761,18 @@ window.__ModuleLoader__.load({
       }, []);
 
       const label = showTitle ? `${title} ${line}` : line;
-      const tone = item.outcome === 'completed'
+      const tone = toneProp ?? (item.outcome === 'completed'
         ? 'success'
         : item.outcome === 'error'
           ? 'error'
-          : undefined;
+          : undefined);
+      const glyph = tone === 'success' ? '✓' : tone === 'attention' ? '?' : '!';
       const icon = tone === undefined
         ? null
         : h('span', {
           className: `dtt-icon dtt-icon-${tone}`,
           'aria-hidden': 'true',
-        }, h('span', { className: 'dtt-icon-glyph' }, tone === 'success' ? '✓' : '!'));
+        }, h('span', { className: 'dtt-icon-glyph' }, glyph));
 
       return h('div', {
         className: `dtt-card${closing ? ' dtt-card-out' : ''}`,
@@ -1608,6 +1820,11 @@ window.__ModuleLoader__.load({
     /** locale 缺席时的稳定空实现，保证 hook 调用顺序不变。 */
     const NO_LOCALE_SUBSCRIBE = () => () => {};
     const NO_LOCALE_SNAPSHOT = () => null;
+    const EMPTY_ITEMS = Object.freeze([]);
+    const NO_STORE = Object.freeze({
+      subscribe: () => () => {},
+      get: () => EMPTY_ITEMS,
+    });
 
     /**
      * 标准 props 的 selector 恒等函数（模块级常量）。
@@ -1623,6 +1840,7 @@ window.__ModuleLoader__.load({
      */
     function ToastHost(props) {
       const store = props.store;
+      const notices = props.notices ?? NO_STORE;
       const timerSource = props.timers
         ?? (typeof window !== 'undefined' && typeof window.setTimeout === 'function' ? window : undefined);
       // 不把 window 原样传下去：window 没有 now，且方法需要正确的 this。
@@ -1652,6 +1870,7 @@ window.__ModuleLoader__.load({
         : NO_LOCALE_SNAPSHOT;
 
       const items = React.useSyncExternalStore(store.subscribe, store.get, store.get);
+      const noticeItems = React.useSyncExternalStore(notices.subscribe, notices.get, notices.get);
       // 只借订阅触发重渲染；可见文本由 ctx.locale.bind 在调用时解析当前语言。
       React.useSyncExternalStore(subscribeLocale, getLocaleSnapshot, getLocaleSnapshot);
       const workspaces = useWorkspaces(IDENTITY);
@@ -1671,11 +1890,36 @@ window.__ModuleLoader__.load({
           if (event.key !== 'Escape') return;
           const current = store.get();
           // 按 WP3 补遗：Esc 关闭“队列里最新”的一条；视觉顺序仍按 §6.5（最新在下）。
-          if (current.length > 0) store.dismiss(current[current.length - 1].key);
+          if (current.length > 0) {
+            store.dismiss(current[current.length - 1].key);
+            return;
+          }
+          const pendingNotices = notices.get();
+          if (pendingNotices.length > 0) notices.dismiss(pendingNotices[pendingNotices.length - 1].key);
         };
         window.addEventListener('keydown', onKeyDown);
         return () => window.removeEventListener('keydown', onKeyDown);
-      }, [store]);
+      }, [store, notices]);
+
+      const noticeCards = noticeItems.map((item) => {
+        const names = resolveNames(workspaces, sessions, item.sessionId);
+        const keys = noticeKindKeys(item.kind);
+        const title = t(keys.title);
+        const line = formatLine(t, names.workspace, names.session, t(keys.status));
+        return h(ToastErrorBoundary, { key: item.key },
+          h(ToastCard, {
+            item,
+            title,
+            line,
+            t,
+            showTitle: true,
+            sticky: true,
+            tone: 'attention',
+            timers,
+            onOpen: typeof openSession === 'function' ? openSession : undefined,
+            onDismiss: (key) => notices.dismiss(key),
+          }));
+      });
 
       const cards = items.map((item) => {
         const names = resolveNames(workspaces, sessions, item.sessionId);
@@ -1713,7 +1957,7 @@ window.__ModuleLoader__.load({
           role: 'status',
           'aria-live': 'polite',
           'aria-atomic': 'false',
-        }, cards));
+        }, [...noticeCards, ...cards]));
     }
 
     /**
@@ -1780,6 +2024,7 @@ window.__ModuleLoader__.load({
       const texts = env?.texts;
       const deferred = new Map();
       const issued = new Set();
+      const issuedByKey = new Map();
       let disposed = false;
       let listening = false;
 
@@ -1830,6 +2075,17 @@ window.__ModuleLoader__.load({
           // 尽力关闭，不影响其他清理。
         }
         issued.delete(notification);
+        for (const [key, value] of issuedByKey) {
+          if (value === notification) issuedByKey.delete(key);
+        }
+      }
+
+      /** G2：pending 解决后关闭对应系统通知，避免留下过期的“等待授权”。 */
+      function closeByKey(key) {
+        if (key === undefined || key === null) return;
+        deferred.delete(key);
+        const notification = issuedByKey.get(key);
+        if (notification !== undefined) closeNotification(notification);
       }
 
       function deliver(item) {
@@ -1844,7 +2100,10 @@ window.__ModuleLoader__.load({
             tag: `dsh-task-${hash16(item.key ?? '')}`,
             renotify: false,
           });
-          const forget = () => issued.delete(notification);
+          const forget = () => {
+            issued.delete(notification);
+            if (issuedByKey.get(item.key) === notification) issuedByKey.delete(item.key);
+          };
           notification.onclose = forget;
           notification.onclick = () => {
             forget();
@@ -1857,6 +2116,7 @@ window.__ModuleLoader__.load({
             closeNotification(notification);
           };
           issued.add(notification);
+          issuedByKey.set(item.key, notification);
           return 'delivered';
         } catch {
           return defer(item);
@@ -1914,7 +2174,8 @@ window.__ModuleLoader__.load({
             return;
           }
           // D4：先补弹/重新计时浮层，再重试系统通知。
-          if (typeof env?.requeue === 'function') {
+          // G2 提醒已经常驻在浮层里，不能走完成队列的 requeue。
+          if (item?.notice !== true && typeof env?.requeue === 'function') {
             try {
               env.requeue(item);
             } catch {
@@ -1955,14 +2216,15 @@ window.__ModuleLoader__.load({
         }
         for (const notification of [...issued]) closeNotification(notification);
         issued.clear();
+        issuedByKey.clear();
         deferred.clear();
       }
 
-      return { notify, onVisible, dispose, issuedCount: () => issued.size };
+      return { notify, onVisible, close: closeByKey, dispose, issuedCount: () => issued.size };
     }
 
     return {
-      inject: ['slots', 'locale', 'sessions', 'remote', 'uiWorkspace'],
+      inject: ['slots', 'locale', 'sessions', 'remote', 'uiWorkspace', 'uiSession'],
       apply(ctx) {
         const win = typeof window !== 'undefined' ? window : undefined;
         // 1. 配置：DEFAULTS ← 注入行（ADR-009 三项为准，其余字段按类型覆盖）。
@@ -2069,6 +2331,25 @@ window.__ModuleLoader__.load({
           };
         }
 
+        /** G2 提醒文案：只按 kind 选标题/状态，不读 pending 的任何内容字段。 */
+        function noticeTextFor(item) {
+          let liveSessions = null;
+          try {
+            liveSessions = typeof ctx.sessions?.list?.getSnapshot === 'function'
+              ? ctx.sessions.list.getSnapshot()
+              : null;
+          } catch {
+            liveSessions = null;
+          }
+          const cached = resolveNames(workspaceSnapshot, sessionsSnapshot, item.sessionId);
+          const live = resolveNames(workspaceSnapshot, liveSessions, item.sessionId);
+          const keys = noticeKindKeys(item.kind);
+          return {
+            title: t(keys.title),
+            line: formatLine(t, cached.workspace, cached.session ?? live.session, t(keys.status)),
+          };
+        }
+
         /** 入队即通知；同一 key 只发一次。这是唯一的通知入口。 */
         function notifyEnqueuedNow(item) {
           if (item === null || typeof item !== 'object') return;
@@ -2084,6 +2365,44 @@ window.__ModuleLoader__.load({
           void notifier.notify({ ...item, title: text.title, line: text.line });
         }
         notifyEnqueued = notifyEnqueuedNow;
+
+        // G2：观察 uiSession.sessionStatus，把“等待授权/回答”变成常驻提醒。
+        // 只做只读投影；不拦截 waterfall、不回答、不改变任何 pending 状态。
+        function readUiSession() {
+          try {
+            if (typeof ctx.get === 'function') {
+              const service = ctx.get('uiSession');
+              if (service !== undefined && service !== null) return service;
+            }
+          } catch {
+            // 服务缺席时回落到属性访问。
+          }
+          try {
+            return ctx.uiSession;
+          } catch {
+            return undefined;
+          }
+        }
+        const uiSession = readUiSession();
+        const interactionStore = createInteractionStore({
+          source: uiSession?.sessionStatus,
+          onAdded: (item) => {
+            let text;
+            try {
+              text = noticeTextFor(item);
+            } catch {
+              const keys = noticeKindKeys(item.kind);
+              text = {
+                title: t(keys.title),
+                line: formatLine(t, undefined, undefined, t(keys.status)),
+              };
+            }
+            void notifier.notify({ ...item, title: text.title, line: text.line });
+          },
+          onRemoved: (item) => notifier.close(item.key),
+        }, config);
+        ctx.effect(() => interactionStore.start());
+        ctx.effect(() => ctx.on('connection/reset', () => interactionStore.reset()));
 
         ctx.effect(() => store.start());
 
@@ -2106,6 +2425,7 @@ window.__ModuleLoader__.load({
           return h(HostErrorBoundary, null, h(ToastHost, {
             ...props,
             store: props.store ?? store,
+            notices: props.notices ?? interactionStore,
             config: props.config ?? config,
             t: props.t ?? t,
             locale: props.locale ?? localeFace,
@@ -2126,6 +2446,9 @@ window.__ModuleLoader__.load({
       },
       __test__: {
         createStore,
+        createInteractionStore,
+        pendingInteractionOf,
+        noticeKindKeys,
         createResolver,
         classify,
         readClientConfig,

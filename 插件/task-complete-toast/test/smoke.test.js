@@ -85,9 +85,11 @@ test('S4 客户端：factory 返回 inject/apply，并暴露 __test__（ADR-007�
 
   assert.equal(entry.id, manifest.name);
   assert.deepEqual(Object.keys(factory).sort(), ['__test__', 'apply', 'inject']);
-  assert.deepEqual(Array.from(factory.inject), ['slots', 'locale', 'sessions', 'remote', 'uiWorkspace']);
+  assert.deepEqual(Array.from(factory.inject), ['slots', 'locale', 'sessions', 'remote', 'uiWorkspace', 'uiSession']);
   assert.equal(typeof factory.apply, 'function');
   assert.equal(typeof factory.__test__.createStore, 'function');
+  assert.equal(typeof factory.__test__.createInteractionStore, 'function');
+  assert.equal(typeof factory.__test__.pendingInteractionOf, 'function');
   assert.equal(typeof factory.__test__.createResolver, 'function');
   assert.equal(typeof factory.__test__.classify, 'function');
   assert.equal(typeof factory.__test__.formatLine, 'function');

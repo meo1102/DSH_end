@@ -461,6 +461,34 @@ test('P05 D4：deferred 恢复可见 → 浮层条目重新入队且 at 刷新',
   notifier.dispose();
 });
 
+test('P05b G2 常驻提醒 deferred 恢复可见 → 只重试通知，不进入完成队列', async () => {
+  FakeNotification.reset('denied');
+  const document = createDocument({ visible: false, focused: false });
+  const requeued = [];
+  const notifier = createNotifier({
+    document,
+    Notification: FakeNotification,
+    requeue: (item) => requeued.push(item),
+  }, (key) => key, { systemNotification: 'auto' });
+
+  const notice = {
+    key: 'notice:approval:1',
+    sessionId: 's-1',
+    kind: 'approval',
+    notice: true,
+    title: '需要授权',
+    line: '插件[会话] · 等待审批',
+  };
+  assert.equal(await notifier.notify(notice), 'deferred');
+
+  document.setVisible(true);
+  document.setFocused(true);
+  await notifier.onVisible();
+
+  assert.equal(requeued.length, 0, 'G2 提醒不得走完成队列的 requeue');
+  notifier.dispose();
+});
+
 test('P06 F6：点击卡片回跳并 dismiss；关闭按钮不触发回跳', async () => {
   FakeNotification.reset('granted');
   const document = createDocument({ visible: true, focused: true });

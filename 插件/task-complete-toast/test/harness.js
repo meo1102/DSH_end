@@ -318,6 +318,31 @@ export function slotChildProps(element) {
 }
 
 /**
+ * 最小 uiSession 状态源（G2）：Map<sessionId, SessionStatus> + 订阅通知。
+ * 测试只依赖 getSnapshot/subscribe，不复制真实服务的内部状态机。
+ */
+export function createFakeUiSession(initial = new Map()) {
+  let snapshot = initial;
+  const listeners = new Set();
+  return {
+    sessionStatus: {
+      getSnapshot: () => snapshot,
+      subscribe(listener) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    },
+    set(next) {
+      snapshot = next;
+      for (const listener of [...listeners]) listener();
+    },
+    listenerCount() {
+      return listeners.size;
+    },
+  };
+}
+
+/**
  * 最小客户端 ctx（WP6a 起含 effect/on/locale/remote/sessions）：
  * inject 立即执行回调，register 记录注册项并返回清理函数；
  * effect 记录清理函数，disposeAll 逆序执行；locale/remote 记录注册并暴露触发入口。
@@ -434,6 +459,7 @@ export function createFakeCtx(options = {}) {
         this.opened.push(id);
       },
     },
+    uiSession: options.uiSession,
   };
 
   return {

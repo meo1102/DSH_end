@@ -11,7 +11,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createFakeCtx, loadClientModule, slotChildProps } from './harness.js';
+import { createFakeCtx, createFakeUiSession, loadClientModule, slotChildProps } from './harness.js';
 
 /** §7.7 的 14 个键，顺序无关，便于集合比较。 */
 const LOCALE_KEYS = [
@@ -20,10 +20,14 @@ const LOCALE_KEYS = [
   'titleStopped',
   'titleInterrupted',
   'titleBlocked',
+  'titleAwaitingApproval',
+  'titleAwaitingAnswer',
+  'titleAwaitingConfirmation',
   'statusIdle',
   'statusRunning',
   'statusAwaitingAnswer',
   'statusAwaitingApproval',
+  'statusAwaitingConfirmation',
   'fallbackWorkspace',
   'fallbackSession',
   'actionView',
@@ -113,6 +117,7 @@ function createApplyHarness(options = {}) {
   const fake = createFakeCtx({
     list: options.list ?? readyList(options.sessionIds ?? []),
     binding: options.binding ?? (() => undefined),
+    uiSession: options.uiSession,
   });
   factory.apply(fake.ctx);
 
@@ -401,4 +406,47 @@ test('W09 卸载 → 在途 resolve 被 abort、计时器清空', async () => {
   await flushMicrotasks();
   assert.equal(harness.clock.pending(), 0, '卸载后不得留下计时器');
   assert.equal(harness.store.get().length, 0, '卸载不得留下队列条目');
+});
+
+test('W10 G2：uiSession.sessionStatus 的 pendingInteraction 进入常驻提醒并在解决后移除', () => {
+  const uiSession = createFakeUiSession();
+  const harness = createApplyHarness({
+    sessionIds: ['s-10'],
+    uiSession,
+    binding: () => undefined,
+  });
+
+  assert.equal(harness.toastProps.notices.get().length, 0, '初始无 pending 时为空');
+
+  uiSession.set(new Map([
+    ['s-10', { running: true, pendingInteraction: { key: 'approval:1', kind: 'approval' } }],
+  ]));
+  const active = harness.toastProps.notices.get();
+  assert.equal(active.length, 1);
+  assert.equal(active[0].sessionId, 's-10');
+  assert.equal(active[0].kind, 'approval');
+  assert.equal(active[0].key, 'notice:approval:1');
+
+  // 同一 pending 重复发布不得重复入队。
+  uiSession.set(new Map([
+    ['s-10', { running: true, pendingInteraction: { key: 'approval:1', kind: 'approval' } }],
+  ]));
+  assert.equal(harness.toastProps.notices.get().length, 1, '同一 pending key 只提醒一次');
+
+  uiSession.set(new Map());
+  assert.equal(harness.toastProps.notices.get().length, 0, 'pending 解决后提醒移除');
+
+  harness.disposeAll();
+  assert.equal(uiSession.listenerCount(), 0, '卸载必须取消 sessionStatus 订阅');
+});
+
+test('W11 G2：未知 kind 与缺 key 的 pending 不提醒', () => {
+  const uiSession = createFakeUiSession(new Map([
+    ['s-11a', { pendingInteraction: { key: 'unknown:1', kind: 'mystery' } }],
+    ['s-11b', { pendingInteraction: { kind: 'approval' } }],
+    ['s-11c', { pendingInteraction: null }],
+  ]));
+  const harness = createApplyHarness({ sessionIds: ['s-11a', 's-11b', 's-11c'], uiSession });
+
+  assert.equal(harness.toastProps.notices.get().length, 0, '形状不符不得猜');
 });

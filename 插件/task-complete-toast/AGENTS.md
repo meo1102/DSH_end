@@ -5,7 +5,7 @@
 ## 开工前
 
 1. 读 [`docs/宪章.md`](docs/宪章.md)——项目总约束，冲突时以它为准。
-2. 读 [`docs/设计.md`](docs/设计.md)（当前 v1.1.0 行为契约）、[`docs/决策记录.md`](docs/决策记录.md)、[`docs/验收报告.md`](docs/验收报告.md)。
+2. 读 [`docs/设计.md`](docs/设计.md)（v1.1.0 发布契约 + G2 工作树契约）、[`docs/决策记录.md`](docs/决策记录.md)、[`docs/验收报告.md`](docs/验收报告.md)。
 3. 看 [`docs/取证/台账.md`](docs/取证/台账.md) 与最近一道门禁；当前阶段状态以门禁检查单为准。
 
 ## 硬约束
@@ -20,14 +20,14 @@
 ## 测试
 
 ```powershell
-node --test --test-isolation=none test/smoke.test.js test/integration.test.js test/store.test.js test/format.test.js test/dismiss.test.js test/notifier.test.js test/resolver.test.js test/wiring.test.js test/presentation.test.js
+node --test --test-isolation=none test/smoke.test.js test/integration.test.js test/store.test.js test/format.test.js test/dismiss.test.js test/notifier.test.js test/resolver.test.js test/wiring.test.js test/presentation.test.js test/interaction.test.js
 ```
 
-期望 `tests 142 / pass 142 / fail 0`。受限沙箱内**必须** `--test-isolation=none`（默认模式 spawn EPERM）。
+期望 `tests 152 / pass 152 / fail 0`。受限沙箱内**必须** `--test-isolation=none`（默认模式 spawn EPERM）。
 
 ## 完成定义
 
 - 行为变更：先改 `docs/设计.md`，同步 `docs/决策记录.md`，再改代码与测试。
 - 证据：事实写进台账；阶段结束更新门禁检查单；验收必须列失败/未测项，禁止「全绿」话术。
 - 基线：阶段结束提交 commit/tag，记录源码/测试哈希与验收基线版本。
-- 不声称 G2/G3 已实现；G2 先取证信号，无信号就取消，不猜。
+- 不声称 G2 已发布或 G3 已实现；G2 真机未验前只称「代码完成、未发布」。
