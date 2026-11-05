@@ -6,7 +6,7 @@
 
 | ID | 日期 | 提案 | 类型 | 风险 | 状态 | 证据 | 人类裁决 |
 |---|---|---|---|---|---|---|---|
-| EV-001 | 2026-11-05 | 运行态探针脚本（安装/link/bundles/patch/两条路由） | 工具/流程 | 低（只读、无产品改动） | **trial**：正控 7/7；负控 5/7 且 exit 1 | [`../workspace/memory/ev-001-runtime-probe.md`](../workspace/memory/ev-001-runtime-probe.md)；[`../workspace/evidence/ev-001-probe-2026-11-05.md`](../workspace/evidence/ev-001-probe-2026-11-05.md) | 2026-11-05 人类“先做个进化试试”；**激活为每道门必跑待批准** |
+| EV-001 | 2026-11-05 | 运行态探针脚本（安装/link/bundles/patch/两条路由） | 工具/流程 | 低（只读、无产品改动） | **active**（2026-11-05 激活）：写入 AGENTS“门禁/交付前必跑” | [`../workspace/memory/ev-001-runtime-probe.md`](../workspace/memory/ev-001-runtime-probe.md)；[`../workspace/evidence/ev-001-probe-2026-11-05.md`](../workspace/evidence/ev-001-probe-2026-11-05.md) | 2026-11-05 人类“激活”；正控 7/7、负控 fail |
 
 ## 候选项（未立项）
 

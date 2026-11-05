@@ -19,6 +19,7 @@
 | 2026-11-05 | **批准 `grow-2`**：走 **G4**；持久化 **A 方案**（宿主 `configEditor`）；边界就用 **字号 12–18 px、卡片宽度 280–480 px**；**最小宽度随字号联动**（`max(280, fontSize×18)`） | 人类明确选择；A 方案有宿主服务支持（F-036） | `direction.md` v1.2-aecw；`BLUEPRINT.md` v2 **approved**；进入 `freeze` + `start`；CR-004/CR-005 |
 | 2026-11-05 | **安装方式：替换原件**——把 desktop profile 的 link/junction 指向本副本（原件保留在原路径，可回滚） | 人类选择 1；不新增第二个包名 | profile/junction 已指向副本；plugin active；回滚 = remove_bundle 后 install_bundle 指向原件；F-038 |
 | 2026-11-05 | **同意做一次进化试验**：EV-001 运行态探针，低风险只读试用；**不自动晋升**为每道门必跑/共享规则 | 人类“基线冻结，先做个进化试试” | 正控 7/7、负控 fail；见 [`cluster/evolution.md`](../cluster/evolution.md)、[`ev-001-runtime-probe.md`](../workspace/memory/ev-001-runtime-probe.md)；激活待人类批准 |
+| 2026-11-05 | **激活 EV-001**：`node scripts/probe.mjs` 写入 AGENTS，作为门禁/交付前必跑；FAIL 不得开门禁 | 人类“激活” | 进化台账状态 active；只读、可回滚；分布外验证/回滚演练仍待做 |
 
 ## 待人类（阶段门禁时，不阻塞开工）
 

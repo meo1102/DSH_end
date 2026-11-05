@@ -10,6 +10,7 @@
 2. 读 [`BLUEPRINT.md`](BLUEPRINT.md)——阶段 `grow-2`（外观设置 + 实时预览，**已关闭/有条件通过**）；下一阶段须新蓝图 + 重新 `freeze`/`start`，不自动续跑。
 3. 读 [`ledger.md`](ledger.md)、最近的 [`gates/`](gates/)；设计契约与 ADR 在 [`workspace/memory/`](workspace/memory/)；原始证据在 [`workspace/evidence/`](workspace/evidence/)。
 4. 旧文档编号（D-001/D-002、旧 G2-6、`8D034A…`）先查 [`workspace/memory/history-mapping.md`](workspace/memory/history-mapping.md)，不要按字面理解。
+5. **门禁/交付前跑运行态探针**：`node scripts/probe.mjs`（EV-001，2026-11-05 激活）。FAIL 则停，不进入门禁；它只做只读结构检查，不替代真机/人工验收。
 
 ## 硬约束
 
@@ -18,6 +19,7 @@
 - **零第三方运行时依赖、无构建链**；不修改 DSH 源码/安装目录；不联网外发、不做遥测。
 - **不写 localStorage/IndexedDB/cookie**；不持久化通知历史；不跨工作区/用户泄漏。
 - **不跳过门禁**：没有 `freeze` 不 `start`；没有 `start` 不执行阶段任务；阶段结束必须停、报告、等下一道门。
+- **门禁前探针**：`node scripts/probe.mjs` FAIL 时不得开门禁/交付；探针 PASS 也不能替代人类真机与截图。
 - **不原地改冻结基线**：方向/蓝图/验收变更走 `change`，升版本 + 影响分析 + 人类裁决；新版本重新 freeze/start。
 - **未开工前不改产品代码**：`freeze` + `start` 之前只做只读/规划；开工后按蓝图工作包改代码，不在 `grow-2` 内静默扩范围。
 - **UTF-8 纪律**：改文件用编辑器或显式 UTF-8；写回后断言无 `U+FFFD`。不要用 PowerShell 默认编码改写中文文件。
@@ -27,6 +29,10 @@
 ## 测试
 
 ```powershell
+# 门禁前运行态探针（EV-001，只读）
+node scripts/probe.mjs
+
+# 全量单测
 node --test --test-isolation=none test/smoke.test.js test/integration.test.js test/store.test.js test/format.test.js test/dismiss.test.js test/notifier.test.js test/resolver.test.js test/wiring.test.js test/presentation.test.js test/interaction.test.js
 ```
 

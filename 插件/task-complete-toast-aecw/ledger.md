@@ -65,6 +65,7 @@
 | F-042 | 2026-11-05 | G2 遮挡推送真机通过：授权弹窗出现 → 最小化 DSH 窗口 → Windows 通知出现 → 拒绝后通知消失 | 人类会话反馈（E2，无截图） | 已核验（人类目视） | 人类本人 | F-041；`grow-2` 门禁；[`human/acceptance.md`](human/acceptance.md) |
 | F-043 | 2026-11-05 | `grow-2` 基线冻结：`DSH_end` commit `4aff41a`，tag `aecw-grow-2-2026-11-05`；169/169、`node --check` 17/17、check FAIL 0/WARN 0 | `git commit` / `git tag` / `node --test` / `node bin/aecw.mjs check` | 已核验（E1，可复现） | 本会话 agent | [`workspace/evidence/baseline-2026-11-05-grow-2.md`](workspace/evidence/baseline-2026-11-05-grow-2.md) |
 | F-044 | 2026-11-05 | EV-001 运行态探针试用：正控 7/7（exit 0）；负控坏 URL 5/7（HTTP 两项 FAIL，exit 1）；只读、无配置写入 | `node scripts/probe.mjs`；`--url http://127.0.0.1:1` | 已核验（E1） | 本会话 agent | [`ev-001-probe-2026-11-05.md`](workspace/evidence/ev-001-probe-2026-11-05.md)；`cluster/evolution.md` |
+| F-045 | 2026-11-05 | 人类激活 EV-001：`node scripts/probe.mjs` 写入 AGENTS，作为门禁/交付前必跑；FAIL 不得开门禁 | 2026-11-05 人类消息 | 已核验（人类决定） | 人类本人 | `cluster/evolution.md`；`AGENTS.md`；`STATUS.md` |
 
 ## C. 变更台账
 
