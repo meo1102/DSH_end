@@ -18,6 +18,7 @@
 | 2026-11-05 | 外观设置约束：**字体跟随系统/DSH 正文字体**（不提供字体选择）；**字号、卡片大小给定 min/max**（提案：字号 12–18 px、卡片宽度 280–480 px）；背景色/字体色去留未定 | 收窄字体与尺寸风险；把“任意颜色”留作单独决定 | 写入 [`appearance-settings-design.md`](../workspace/memory/appearance-settings-design.md) §4、[`g4-charter-impact.md`](../workspace/memory/g4-charter-impact.md) §10、`BLUEPRINT.md` v2；F-035 |
 | 2026-11-05 | **批准 `grow-2`**：走 **G4**；持久化 **A 方案**（宿主 `configEditor`）；边界就用 **字号 12–18 px、卡片宽度 280–480 px**；**最小宽度随字号联动**（`max(280, fontSize×18)`） | 人类明确选择；A 方案有宿主服务支持（F-036） | `direction.md` v1.2-aecw；`BLUEPRINT.md` v2 **approved**；进入 `freeze` + `start`；CR-004/CR-005 |
 | 2026-11-05 | **安装方式：替换原件**——把 desktop profile 的 link/junction 指向本副本（原件保留在原路径，可回滚） | 人类选择 1；不新增第二个包名 | profile/junction 已指向副本；plugin active；回滚 = remove_bundle 后 install_bundle 指向原件；F-038 |
+| 2026-11-05 | **同意做一次进化试验**：EV-001 运行态探针，低风险只读试用；**不自动晋升**为每道门必跑/共享规则 | 人类“基线冻结，先做个进化试试” | 正控 7/7、负控 fail；见 [`cluster/evolution.md`](../cluster/evolution.md)、[`ev-001-runtime-probe.md`](../workspace/memory/ev-001-runtime-probe.md)；激活待人类批准 |
 
 ## 待人类（阶段门禁时，不阻塞开工）
 

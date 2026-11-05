@@ -13,6 +13,7 @@
 | [`v-baseline-v01-v28.md`](v-baseline-v01-v28.md) | V01–V28 逐项状态与建议处置 | 当前（待人类逐项裁决） |
 | [`appearance-settings-design.md`](appearance-settings-design.md) | G4 外观设置 + 预览：探针、A 方案、字段契约、实施状态 | 已实现（代码+单测）；真机未验 |
 | [`g4-charter-impact.md`](g4-charter-impact.md) | G4 / G3 约束放宽的 charter 级影响分析 | 已批准（2026-11-05）；留档 |
+| [`ev-001-runtime-probe.md`](ev-001-runtime-probe.md) | EV-001 运行态探针进化提案（假设/证据/影响/回滚/可证伪） | trial（试用通过，未激活） |
 
 ## 负记忆（本项目真实踩过的坑）
 

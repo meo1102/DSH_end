@@ -1,6 +1,6 @@
 # 学习账 · task-complete-toast
 
-> 观察/教训/候选；**不自动晋升**为宪章、规则或技能。晋升要走 `change`（blueprint/charter）+ 人类批准。
+> 观察/教训/候选；**不自动晋升**为宪章、规则或技能。晋升要走 `change`（blueprint/charter）+ 人类批准，或按进化门（[`evolution.md`](evolution.md)）试用/激活。
 > 来源：试点阶段报告 §4、决策记录根因复盘、PILOT-REVIEW 的上下文污染分析。
 
 | 日期 | 观察 | 教训 | 状态 |
@@ -20,6 +20,6 @@
 
 ## 候选（未晋升）
 
-- 把运行态探针（安装/路由/slot/版本）做成只读脚本，每道门前跑一次。
+- 把运行态探针（安装/路由/slot/版本）做成只读脚本，每道门前跑一次。→ **已立 EV-001，试用通过（trial）**；见 [`evolution.md`](evolution.md)。
 - 把 V20（100 次压测）与 V27（patch `enabled:false`）脚本化，优先补这两项。
 - 把“新 agent 只读 STATUS 回答五问”纳入每阶段收尾。

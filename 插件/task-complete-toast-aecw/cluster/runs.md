@@ -20,6 +20,7 @@
 | 2026-11-05 | 单代理 | 设置页诊断与错误边界 | 设置页加 `SettingsErrorBoundary` + 授权诊断（开关/会话源/待提醒数）；重启后 slot occupant 已确认 | F-039；`client.js` |
 | 2026-11-05 | 单代理 + 人类 | G4 设置页验收 + G2 遮挡推送修复 | 人类验收设置页（E2 无截图）；定位“会话内直接 dismiss”导致遮挡无通知；改为 hidden 条目 + 不可见仍发通知；W16/W17、169/169 | F-040/F-041；[`human/acceptance.md`](../human/acceptance.md) |
 | 2026-11-05 | 单代理 + 人类 | G2 遮挡推送真机 + 阶段门禁 | 授权弹窗 → 最小化 → Windows 通知 → 拒绝后消失（E2）；`grow-2` 门禁有条件通过，阶段关闭 | F-042；[`gates/2026-11-05-grow-2.md`](../gates/2026-11-05-grow-2.md) |
+| 2026-11-05 | 单代理 | 基线冻结 + EV-001 试用 | commit `4aff41a` / tag `aecw-grow-2-2026-11-05`；运行态探针正控 7/7、负控 fail；未激活 | F-043/F-044；[`evolution.md`](evolution.md) |
 
 ## 未记录但已发生（避免“记录即完成”的错觉）
 
