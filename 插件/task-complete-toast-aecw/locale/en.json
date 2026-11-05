@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Task Complete Toast",
+    "description": "Shows task-completion and approval reminders in an overlay; position, theme, size, duration, and title are configurable. Settings: Settings → Plugins → Task Complete Toast settings."
+  }
+}

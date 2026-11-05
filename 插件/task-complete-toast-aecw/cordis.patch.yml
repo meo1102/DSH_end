@@ -1,0 +1,4 @@
+# 骨架阶段：只插入一行宿主 entry，不携带 config（当前不导出 Config）。
+- insert:
+    - id: task-complete-toast
+      name: '@local/task-complete-toast'
